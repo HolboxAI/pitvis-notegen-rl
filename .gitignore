@@ -1,0 +1,23 @@
+# run outputs, data caches and logs (synced to S3 by the pipeline)
+runs/
+logs/
+env_lock.txt
+
+# reports generated from runs
+docs/
+
+# third-party code, weights and environments
+third_party/
+checkpoints/
+.venv/
+*.pth
+*.pt
+*.safetensors
+*.zip
+*.mp4
+
+# caches and OS / Office files
+__pycache__/
+.pytest_cache/
+.DS_Store
+~$*

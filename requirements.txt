@@ -1,0 +1,18 @@
+# Installed by setup_env.sh. vllm first: it pins a compatible torch build.
+# Unpinned on purpose (the server's CUDA decides); setup_env.sh writes the resolved
+# versions to env_lock.txt -- keep that file with your results for reproducibility.
+vllm
+ms-swift
+qwen-vl-utils>=0.0.14             # required by ms-swift's Qwen loader
+transformers
+peft
+accelerate
+einops
+timm
+gdown
+opencv-python-headless
+pyyaml
+numpy
+scikit-learn
+tensorboard
+pytest

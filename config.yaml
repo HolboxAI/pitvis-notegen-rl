@@ -1,0 +1,127 @@
+# pitvis-notegen-rl -- single source of truth for every stage.
+# Relative paths resolve against this project directory (where this file lives).
+# Paths under data/ and llm/ point at the PitVis dataset and the language models used.
+
+data:
+  # PitVis-2023 location: a local directory or an s3:// URI, laid out as
+  #   <pitvis_root>/<videos_subdir>/video_01.mp4 ... video_25.mp4
+  #   <pitvis_root>/<annotations_subdir>/annotations_01.csv ... (int_time,int_step,int_instrument1,int_instrument2)
+  #   <pitvis_root>/<annotations_subdir>/map_steps.csv, map_instruments.csv
+  pitvis_root: s3://stanford-segment-clips/debjyoti/endofm-benchmark/data/pitvis
+  videos_subdir: raw/videos
+  annotations_subdir: raw/annotations
+  # Pre-extracted 1 fps frames <frames_subdir>/videoNN/<second>.jpg (from the endo-fm benchmark).
+  # When set, stage 1 reads these instead of decoding the videos (clip_mode: repeat only).
+  # Set to null to decode from video (needed for clip_mode: window and for new cases).
+  frames_subdir: extracted_frames
+  local_cache: data/pitvis          # where an s3:// pitvis_root is synced to (relative to work_dir)
+  # Held-out videos (videos 1-20 train with 5-fold out-of-fold predictions; 21-25 test).
+  test_video_ids: [21, 22, 23, 24, 25]
+  # Instrument codes meaning "no instrument in this slot" (PitVis: -1 out_of_patient,
+  # -2 no_secondary_instrument, 0 no_visible_instrument / occluded_image_inside_patient).
+  # Codes with any mapped name starting "no"/"none" or containing "occluded" are also dropped.
+  instrument_absent_codes: [-1, -2, 0]
+  # Step names (normalized, lowercase, spaces) that are not surgery and never go into a note.
+  non_surgical_steps: [out of patient]
+
+work_dir: runs/pitvis-notegen       # every output of every stage lives under here
+results_uri: s3://stanford-segment-clips/debjyoti/operative-notes/runs/pitvis-notegen   # each stage syncs its outputs here
+
+endofm:
+  repo_dir: third_party/Endo-FM     # cloned by setup_env.sh
+  repo_url: https://github.com/med-air/Endo-FM.git
+  checkpoint: checkpoints/endo_fm.pth
+  checkpoint_s3: s3://stanford-segment-clips/debjyoti/endofm-benchmark/checkpoints/endo_fm.pth  # tried first
+  gdrive_id: 1H7B91Ewm4QkZRsnUk1Bn0IQch5P8C7Xl   # fallback: Endo-FM README "Pre-trained Weights"
+  num_frames: 8
+  # repeat = the benchmark protocol (one frame per second, replicated across the 8-frame clip).
+  # window = 8 consecutive video frames ending at each labeled second, `window_stride_frames` apart.
+  clip_mode: repeat
+  window_stride_frames: 4
+  batch_size: 64
+  decode_workers: 6                 # parallel video decoders (one video per worker)
+  frame_workers: 12                 # parallel JPEG loaders when reading pre-extracted frames
+  amp: true
+
+step_model:
+  # Multi-stage dilated TCN (MS-TCN style) over per-second Endo-FM features, jointly
+  # predicting the step (softmax) and instrument presence (sigmoid).
+  # num_layers: 0 turns it into a per-second linear probe (= the benchmark baseline).
+  hidden: 128
+  num_layers: 10
+  num_stages: 2
+  dropout: 0.3
+  epochs: 60
+  lr: 5.0e-4
+  weight_decay: 1.0e-4
+  instrument_loss_weight: 1.0
+  smoothing_loss_weight: 0.15
+  cv_folds: 5                       # out-of-fold predictions for training videos (see README)
+  seed: 0
+
+facts:
+  smoothing: viterbi                # viterbi | median | none
+  median_window_s: 15
+  min_segment_s: 20                 # shorter predicted segments are merged into a neighbour
+  instrument_threshold: 0.5
+  instrument_min_fraction: 0.2      # instrument listed if p>=threshold for >=20% of the segment
+
+dataset:
+  include_full_video: true
+  window_minutes: 15                # extra GRPO prompts: sub-windows of each procedure
+  window_stride_minutes: 5
+  min_gold_step_s: 10               # a step must last >=10s in the window to count as gold
+  min_gold_instrument_s: 5
+  reliability_floor: 0.2            # minimum recall weight for a step/instrument (see rewards.py)
+  procedure_name: Endoscopic transsphenoidal pituitary surgery
+
+llm:
+  base: Qwen/Qwen3.5-9B             # structured-note policy (HF id or local path)
+  model_type: null                  # ms-swift model_type (null = inferred by ms-swift)
+  cold_start_adapter: null          # optional LoRA dir to start from (e.g. a synced copy of A_s189)
+  max_new_tokens: 1536              # full-procedure notes list every step segment; 1024 truncated some
+  max_model_len: 8192
+  gpu_memory_utilization: 0.85      # eval / inference only
+  tensor_parallel_size: 1
+
+sft:                                # optional format warm-start before GRPO (see README)
+  enabled: false
+  epochs: 1
+  lr: 1.0e-4
+  lora_rank: 32
+  lora_alpha: 64
+
+grpo:
+  reward_funcs: [note_grounding, note_calibration, note_temporal, note_safety, note_format]
+  reward_weights: [1.0, 0.5, 0.3, 0.3, 0.2]
+  lora_rank: 32
+  lora_alpha: 64
+  learning_rate: 5.0e-6
+  warmup_steps: 20
+  max_steps: 1000
+  num_generations: 8
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2
+  temperature: 1.0
+  beta: 0.001
+  max_length: 4096                  # prompt tokens (vLLM context = max_length + max_completion_length)
+  max_completion_length: 1536
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.4
+  save_steps: 100
+  nproc_per_node: 1
+  report_to: tensorboard
+  extra_args: []                    # appended verbatim to the swift command line
+
+eval:
+  hedge_threshold: 0.6              # claims below this confidence are rendered "[verify]"
+
+final_notes:                        # stage 9: structured note -> human-readable operative note
+  # Medical instruction-tuned writer; only rephrases the structured note (verified afterwards).
+  # Gated on Hugging Face: accept the licence on the model page and export HF_TOKEN on the server.
+  model: google/medgemma-27b-text-it
+  quantization: fp8                 # 27B in FP8 fits one 48 GB GPU
+  max_new_tokens: 900
+  retries: 1                        # regenerate once if verification fails, then use rule-based prose
+  full_procedures_only: true
