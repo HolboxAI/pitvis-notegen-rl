@@ -8,14 +8,18 @@
 #     so a new instance or a lost disk resumes from the newest checkpoint in S3;
 #   - training restarts with --resume from the highest-step full checkpoint;
 #   - to resume from a specific checkpoint instead, put its path (relative to the project dir,
-#     e.g. runs/pitvis-notegen/grpo_v2/v0-.../checkpoint-150) in $RUNS_S3/$OUT/resume_from.txt;
+#     e.g. runs/pitvis-notegen/grpo_medgemma/v0-.../checkpoint-150) in $RUNS_S3/$OUT/resume_from.txt;
 #   - after a watchdog stop, training is not restarted automatically: delete $OUT/.watchdog_stop
 #     (locally and in S3) and set resume_from.txt to its last_healthy_checkpoint to continue.
 set -euo pipefail
-PROJ_S3=s3://stanford-segment-clips/debjyoti/operative-notes/pitvis-notegen-rl
+PROJ_S3=${PROJ_S3:-s3://stanford-segment-clips/debjyoti/operative-notes/pitvis-notegen-rl-medgemma}
 RUNS_S3=s3://stanford-segment-clips/debjyoti/operative-notes/runs/pitvis-notegen
-OUT=${OUT:-grpo_v2}
-EVAL=${EVAL:-eval_v2}
+OUT=${OUT:-grpo_medgemma}
+EVAL=${EVAL:-eval_medgemma}
+# MedGemma is gated on Hugging Face: the token is read from S3 (never stored in the repository)
+HF_TOKEN=$(aws s3 cp s3://stanford-segment-clips/debjyoti/operative-notes/control/hf_token.txt - 2>/dev/null || true)
+[[ -n "$HF_TOKEN" ]] || { echo "no Hugging Face token at control/hf_token.txt (needed for google/medgemma-4b-it)"; exit 1; }
+export HF_TOKEN
 cd /opt/notegen
 aws s3 sync "$PROJ_S3/" pitvis-notegen-rl/ --exclude "runs/*" --exclude "control/*" --only-show-errors
 cd pitvis-notegen-rl

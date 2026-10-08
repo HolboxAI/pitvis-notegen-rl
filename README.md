@@ -6,10 +6,26 @@ video into time-ordered steps and instruments; a language model trained with rei
 (GRPO) writes a structured note from them; a final writing layer turns the structured note into a
 clinical operative note, checked by a deterministic faithfulness verifier.
 
+**Branch `medgemma`: MedGemma variant.** The language side uses MedGemma throughout: MedGemma-4B
+(Gemma 3, medical) is the GRPO-trained structured-note policy, and MedGemma-27B-text-it writes the
+final note. Perception (Endo-FM, MS-TCN, facts), datasets, rewards, watchdog, checkpoint selection
+and evaluation are shared with `main` (Qwen3.5-9B policy), so the two variants are directly
+comparable on the same held-out videos.
+
+| | `main` | `medgemma` |
+|---|---|---|
+| Structured-note policy | Qwen3.5-9B + LoRA (GRPO) | MedGemma-4B + LoRA (GRPO), vision tower frozen |
+| Final note writer | MedGemma-27B-text-it | MedGemma-27B-text-it |
+| GRPO output / evaluation | `grpo_v2/`, `eval_v2/` | `grpo_medgemma/`, `eval_medgemma/` |
+| Code copy in S3 | `operative-notes/pitvis-notegen-rl/` | `operative-notes/pitvis-notegen-rl-medgemma/` |
+
+MedGemma models are gated on Hugging Face; jobs read the access token from
+`control/hf_token.txt` in S3 and export it as `HF_TOKEN`.
+
 ## Pipeline
 
 ```
-video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ─► Qwen3.5-9B + LoRA (GRPO) ─► plan ─► MedGemma-27B ─► verifier ─► operative note
+video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ─► MedGemma-4B + LoRA (GRPO) ─► plan ─► MedGemma-27B ─► verifier ─► operative note
                 768-d/s    step &     segments,     structured note          phases   clinical prose   faithfulness
                            instrument  confidence,   (steps, times,                                     gate
                            probs / s   reliability   instruments)
@@ -20,7 +36,7 @@ video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ─► Qwen3.5-9B + LoRA
 | Visual encoder | Endo-FM, ViT-B/16 TimeSformer (frozen) | One 768-d feature per second of video |
 | Temporal recogniser | MS-TCN: 2 stages × 10 dilated residual layers, joint step softmax (15) + instrument sigmoid (18) | Per-second step and instrument probabilities |
 | Facts builder | Viterbi decoding with label-estimated step transitions, segmentation | Time-ordered segments with confidence and per-class reliability |
-| Structured note policy | Qwen3.5-9B with LoRA (rank 32), trained with GRPO (ms-swift, vLLM generation) | Structured note: steps with times and confidences, instruments, closure |
+| Structured note policy | MedGemma-4B with LoRA (rank 32, language layers; vision tower frozen), trained with GRPO (ms-swift, vLLM generation) | Structured note: steps with times and confidences, instruments, closure |
 | Final note writer | MedGemma-27B-text-it (FP8) | Clinical prose from a phase plan, one worked example in the prompt |
 | Verifier | Deterministic checker | Every step, instrument and time in the prose must come from the structured note |
 

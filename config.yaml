@@ -84,7 +84,9 @@ dataset:
   truncation_credit: 0.5            # share of grounding/calibration/temporal/safety kept by a truncated note
 
 llm:
-  base: Qwen/Qwen3.5-9B             # structured-note policy (HF id or local path)
+  # Structured-note policy: MedGemma-4B (Gemma 3, medical). Used text-only: the vision tower is frozen
+  # (grpo.extra_args) and prompts carry the perception facts. Gated model: HF_TOKEN must be set.
+  base: google/medgemma-4b-it
   model_type: null                  # ms-swift model_type (null = inferred by ms-swift)
   cold_start_adapter: null          # optional LoRA dir to start from (e.g. a synced copy of A_s189)
   max_new_tokens: 1536
@@ -125,7 +127,7 @@ grpo:
   save_total_limit: null            # null = keep every checkpoint (needed for resume and selection)
   nproc_per_node: 1
   report_to: tensorboard
-  extra_args: []                    # appended verbatim to the swift command line
+  extra_args: ["--freeze_vit", "true"]   # appended verbatim to the swift command line
   watchdog:                         # stops training when it destabilises (scripts/grpo_watchdog.py)
     window: 10                      # logged steps averaged per check
     min_step: 30                    # no checks before this step (baseline is taken from steps 1-10)
