@@ -43,7 +43,8 @@ def main():
     source = ["template"] * len(plans)
     if not args.template_only:
         from notegen_rl.llm import Generator
-        gen_cfg = dict(cfg["llm"], max_new_tokens=fcfg["max_new_tokens"], quantization=fcfg.get("quantization"))
+        gen_cfg = dict(cfg["llm"], max_new_tokens=fcfg["max_new_tokens"], quantization=fcfg.get("quantization"),
+                       stop=[])
         gen = Generator(fcfg["model"], None, gen_cfg)
         todo = list(range(len(plans)))
         for attempt in range(1 + int(fcfg.get("retries", 1))):

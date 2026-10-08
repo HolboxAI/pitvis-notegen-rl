@@ -36,6 +36,14 @@ computed against the PitVis labels, so the policy learns to write a correct note
 | `note_temporal` | 0.3 | IoU between each step's stated time range and its labelled time |
 | `note_safety` | 0.3 | Findings and complications left for the surgeon (`[SURGEON TO COMPLETE]`) |
 | `note_format` | 0.2 | Required sections present in order with parseable confidences |
+| `note_concise` | 0.5 | Length and repetition control: full credit up to a soft token budget, falling to 0 at a hard budget; scaled down for consecutive repeated step lines and for text after `</note>` |
+
+A truncated note (opened but not closed) keeps partial credit on the lines it completed
+(`dataset.truncation_credit`). Generation stops at `</note>` during evaluation and inference.
+
+GRPO settings (`config.yaml → grpo`): learning rate 5e-6 with cosine decay, KL coefficient 0.03,
+gradient clipping 0.5, length-unbiased `dr_grpo` loss, 8 notes per prompt, 400 steps, full
+checkpoints every 25 steps with all checkpoints kept.
 
 ## Stages
 
@@ -51,6 +59,11 @@ computed against the PitVis labels, so the policy learns to write a correct note
 | 7 | `scripts/07_generate_note.py --video X.mp4` — structured note for a new video | `notes/` |
 | 8 | `scripts/08_smoke_data.py` — 10-procedure smoke-test datasets | `datasets/smoke_*.jsonl` |
 | 9 | `scripts/09_final_notes.py` — plan → MedGemma → verify → final operative notes | `final_notes/` |
+| 10 | `scripts/10_select_checkpoint.py` — evaluate GRPO checkpoints on the validation videos and record the best | `<grpo-dir>/best_checkpoint.json` |
+| – | `scripts/grpo_watchdog.py` — follows the training log and stops training when KL, gradient norm, clipped completions, completion length or reward leave their configured range; records the last healthy checkpoint | `<grpo-dir>/.watchdog_stop` |
+
+Videos 1–20 train the step model; within them, `data.val_video_ids` (5, 12, 18) are kept out of GRPO
+and used for checkpoint selection; videos 21–25 are the held-out test set.
 
 ## Results
 
@@ -84,9 +97,20 @@ final notes). MedGemma is a gated Hugging Face model; set `HF_TOKEN` for stage 9
 `control/job.sh` from S3, runs it, streams its log to `control/logs/`, writes `control/status.txt`
 and shuts down (instance-initiated shutdown = stop, so the disk persists between jobs).
 Job scripts: `job_prepare.sh`, `job_rebuild.sh`, `job_smoke.sh`, `job_smoke_grpo.sh`,
-`job_format_check.sh`, `job_full_grpo.sh` (1000-step GRPO with resume, then evaluation) and
-`job_final_notes.sh`. `infra/status.sh` prints job status, current stage and GRPO progress;
-`infra/watch.sh` waits for the next milestone.
+`job_format_check.sh`, `job_full_grpo.sh`, `job_grpo_v2.sh` and `job_final_notes.sh`.
+`infra/status.sh` prints job status, current stage and GRPO progress; `infra/watch.sh` waits for
+the next milestone.
+
+`job_grpo_v2.sh` runs GRPO with the watchdog, selects the checkpoint on the validation videos and
+evaluates template, base and the selected checkpoint on the held-out videos. Training resumes after
+any interruption: the output directory is synced to S3 every 5 minutes and restored at start, and
+training continues from the highest-step full checkpoint (or from the checkpoint named in
+`<results_uri>/<grpo-dir>/resume_from.txt`). Manual resume on any machine:
+
+```bash
+python scripts/05_train.py --stage grpo --output-subdir grpo_v2 --resume                  # newest full checkpoint
+python scripts/05_train.py --stage grpo --output-subdir grpo_v2 --resume-from <checkpoint-dir>
+```
 
 ## Layout
 
@@ -95,9 +119,9 @@ config.yaml          all settings
 setup_env.sh         environment, Endo-FM clone and checkpoint, unit tests
 run_pipeline.sh      stages 0-6
 notegen_rl/          data, endofm, step_model, facts, prompts, rewards, swift_plugin, llm, render, final_notes
-scripts/00-09        one script per stage
+scripts/00-10        one script per stage, plus grpo_watchdog.py
 infra/               EC2 user-data, S3-driven job scripts, status and watch helpers
-tests/               reward, facts and final-note unit tests (pytest)
+tests/               reward, facts, final-note, watchdog and checkpoint unit tests (pytest)
 ```
 
 ## References

@@ -61,7 +61,8 @@ def main():
         adapter = args.adapter or find_latest_checkpoint(wpath(cfg, "grpo"))
         if not adapter:
             print("WARNING: no GRPO checkpoint found -- using the untrained base model")
-        msgs = build_messages(facts, reliability, tax.surgical_steps, tax.instr_names, procedure)
+        msgs = build_messages(facts, reliability, tax.surgical_steps, tax.instr_names, procedure,
+                              max_step_lines=cfg["dataset"].get("max_step_lines", 25))
         completion = Generator(cfg["llm"]["base"], adapter, cfg["llm"]).generate([msgs])[0]
 
     out_dir = wpath(cfg, "notes", mkdir=True)

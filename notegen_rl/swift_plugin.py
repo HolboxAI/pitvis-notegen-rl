@@ -63,8 +63,13 @@ class NoteSafety(_NoteORM):
     component = "safety"
 
 
+class NoteConcise(_NoteORM):
+    component = "concise"
+
+
 orms["note_format"] = NoteFormat
 orms["note_grounding"] = NoteGrounding
 orms["note_calibration"] = NoteCalibration
 orms["note_temporal"] = NoteTemporal
 orms["note_safety"] = NoteSafety
+orms["note_concise"] = NoteConcise

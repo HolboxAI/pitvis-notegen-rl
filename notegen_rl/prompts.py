@@ -55,7 +55,7 @@ def render_instrument_reliability(instr_names: list, reliability: dict) -> str:
 
 
 def build_messages(facts, reliability: dict, step_vocab: list, instr_vocab: list,
-                   procedure: str, window: tuple | None = None) -> list:
+                   procedure: str, window: tuple | None = None, max_step_lines: int = 25) -> list:
     scope = (f"This excerpt covers {fmt_ts(window[0])}-{fmt_ts(window[1])} of the procedure. "
              f"Document only what happens inside it.\n" if window else
              "This is the complete procedure.\n")
@@ -86,7 +86,9 @@ Write the note in EXACTLY this format, sections in this order, nothing outside t
 </note>
 
 Rules: one step or instrument per line; use the allowed names verbatim; omit anything you
-believe did not happen; conf is the probability the line is correct."""
+believe did not happen; conf is the probability the line is correct. Keep the note concise:
+list each step occurrence once, give one line spanning a step that is only briefly interrupted,
+never repeat a line, use at most {max_step_lines} step lines, and write nothing after </note>."""
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 

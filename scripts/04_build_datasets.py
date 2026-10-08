@@ -51,7 +51,7 @@ def build_rows(cfg, tax, labels, v, reliability):
         window = (t0, t1) if is_window else None
         rows.append({
             "messages": build_messages(facts, reliability, tax.surgical_steps, tax.instr_names,
-                                       dcfg["procedure_name"], window),
+                                       dcfg["procedure_name"], window, dcfg.get("max_step_lines", 25)),
             "video_id": int(v),
             "window": json.dumps([t0, t1]) if window else "",
             "gold_steps": json.dumps(gold_steps),
@@ -63,6 +63,10 @@ def build_rows(cfg, tax, labels, v, reliability):
             "instrument_vocab": json.dumps(tax.instr_names),
             "reliability": json.dumps(reliability),
             "reliability_floor": float(dcfg["reliability_floor"]),
+            "length_soft_tokens": float(dcfg.get("length_soft_tokens", 600)),
+            "length_hard_tokens": float(dcfg.get("length_hard_tokens", 900)),
+            "chars_per_token": float(dcfg.get("chars_per_token", 3.8)),
+            "truncation_credit": float(dcfg.get("truncation_credit", 0.5)),
             "template_note": render_template_note(facts, dcfg["procedure_name"]),
         })
     return rows
@@ -86,18 +90,25 @@ def main():
     reliability = json.loads(wpath(cfg, "facts", "reliability.json").read_text())
     out = wpath(cfg, "datasets", mkdir=True)
 
-    train = [r for v in split["train"] for r in build_rows(cfg, tax, labels, v, reliability)]
+    # validation videos: training videos kept out of GRPO, used only to choose the checkpoint
+    val_ids = [v for v in cfg["data"].get("val_video_ids") or [] if v in split["train"]]
+    grpo_ids = [v for v in split["train"] if v not in val_ids]
+    train = [r for v in grpo_ids for r in build_rows(cfg, tax, labels, v, reliability)]
+    val = [r for v in val_ids for r in build_rows(cfg, tax, labels, v, reliability)]
     test = [r for v in split["test"] for r in build_rows(cfg, tax, labels, v, reliability)]
 
     write_jsonl(out / "grpo_train.jsonl", [{k: x for k, x in r.items() if k != "template_note"} for r in train])
+    write_jsonl(out / "grpo_val.jsonl", val)
     write_jsonl(out / "grpo_eval.jsonl", test)
+    print(f"GRPO training videos {grpo_ids} | validation videos {val_ids} | test videos {split['test']}")
     # SFT target = the deterministic template note from the same predicted facts: teaches the
     # output FORMAT only. GRPO is what teaches deviating from the perception output.
     write_jsonl(out / "sft_train.jsonl",
                 [{"messages": r["messages"] + [{"role": "assistant", "content": r["template_note"]}]}
                  for r in train])
     full = sum(1 for r in train if not r["window"])
-    print(f"train: {full} full-procedure + {len(train) - full} window prompts from {len(split['train'])} videos")
+    print(f"train: {full} full-procedure + {len(train) - full} window prompts from {len(grpo_ids)} videos; "
+          f"validation: {len(val)} prompts")
     upload_results(cfg, "datasets")
 
 

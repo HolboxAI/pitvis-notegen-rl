@@ -9,13 +9,30 @@ from pathlib import Path
 os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
 
 
-def find_latest_checkpoint(root) -> str | None:
-    """Newest `checkpoint-*` directory anywhere under an ms-swift output dir."""
+def list_checkpoints(root, resumable: bool = False) -> list:
+    """`checkpoint-<step>` dirs under an ms-swift output dir (any vN-* run), sorted by step.
+    resumable=True keeps only full checkpoints (optimizer + trainer state), usable for resume."""
     root = Path(root)
     if not root.exists():
-        return None
-    cks = [p for p in root.rglob("checkpoint-*") if p.is_dir() and (p / "adapter_config.json").exists()]
-    return str(max(cks, key=lambda p: p.stat().st_mtime)) if cks else None
+        return []
+    out = []
+    for p in root.rglob("checkpoint-*"):
+        if not p.is_dir() or not (p / "adapter_config.json").exists():
+            continue
+        if resumable and not ((p / "trainer_state.json").exists() and (p / "optimizer.pt").exists()):
+            continue
+        try:
+            step = int(p.name.split("-")[-1])
+        except ValueError:
+            continue
+        out.append((step, p.stat().st_mtime, p))
+    return [str(p) for _, _, p in sorted(out)]
+
+
+def find_latest_checkpoint(root, resumable: bool = False) -> str | None:
+    """Checkpoint with the highest training step (resumed runs continue the step count)."""
+    cks = list_checkpoints(root, resumable)
+    return cks[-1] if cks else None
 
 
 class Generator:
@@ -41,7 +58,9 @@ class Generator:
                        max_model_len=self.cfg["max_model_len"], trust_remote_code=True,
                        gpu_memory_utilization=self.cfg["gpu_memory_utilization"],
                        tensor_parallel_size=self.cfg["tensor_parallel_size"], **extra)
-        self.sp = SamplingParams(temperature=self.temperature, max_tokens=self.cfg["max_new_tokens"])
+        stop = self.cfg.get("stop") or []
+        self.sp = SamplingParams(temperature=self.temperature, max_tokens=self.cfg["max_new_tokens"],
+                                 stop=stop or None, include_stop_str_in_output=bool(stop))
         self.lora = None
         if self.adapter:
             from vllm.lora.request import LoRARequest
@@ -90,7 +109,11 @@ class Generator:
                 gen = self.model.generate(**ids, max_new_tokens=self.cfg["max_new_tokens"],
                                           do_sample=self.temperature > 0,
                                           temperature=self.temperature if self.temperature > 0 else None)
-            outs.append(self.tok.decode(gen[0, ids["input_ids"].shape[1]:], skip_special_tokens=True))
+            text = self.tok.decode(gen[0, ids["input_ids"].shape[1]:], skip_special_tokens=True)
+            for s in self.cfg.get("stop") or []:
+                if s in text:
+                    text = text[:text.index(s) + len(s)]
+            outs.append(text)
         return outs
 
     def generate(self, convs: list) -> list:

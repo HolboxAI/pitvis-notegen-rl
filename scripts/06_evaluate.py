@@ -18,7 +18,8 @@ from notegen_rl.config import load_config, resolve, upload_results, wpath  # noq
 from notegen_rl.llm import Generator, find_latest_checkpoint  # noqa: E402
 from notegen_rl.render import to_markdown  # noqa: E402
 
-METRICS = ("weighted_total", "format", "parsed_ok", "grounding", "calibration", "temporal", "safety",
+METRICS = ("weighted_total", "format", "parsed_ok", "truncated", "concise", "grounding", "calibration",
+           "temporal", "safety",
            "step_precision", "step_recall", "step_f1", "instr_precision", "instr_recall", "instr_f1")
 
 
@@ -117,8 +118,8 @@ def main():
                 pass
         results[name] = evaluate(name, completions, rows, w_by_func, out_root, cfg["eval"]["hedge_threshold"])
 
-    cols = ("weighted_total", "parsed_ok", "grounding", "step_f1", "instr_f1",
-            "calibration", "ece", "temporal", "safety")
+    cols = ("weighted_total", "parsed_ok", "truncated", "grounding", "step_f1", "instr_f1",
+            "calibration", "ece", "temporal", "safety", "concise")
     lines = ["| system | subset | n | " + " | ".join(cols) + " |", "|" + "---|" * (len(cols) + 3)]
     # summary covers every system evaluated into this folder so far, not just this invocation
     for mf in sorted(out_root.glob("*/metrics.json")):

@@ -102,6 +102,31 @@ def test_think_block_is_ignored():
     assert s["grounding"] == 1.0
 
 
+def test_truncated_note_keeps_partial_credit():
+    full = note(PERFECT_STEPS, PERFECT_INSTR)
+    cut = full[:full.index("<instruments>") + len("<instruments>\n- Suc")]   # stops mid-instruments
+    s_full, s_cut = R.score_all(full, ROW), R.score_all(cut, ROW)
+    assert s_cut["parsed_ok"] == 0.0 and s_cut["truncated"] == 1.0
+    assert 0.0 < s_cut["grounding"] < s_full["grounding"]
+    assert s_cut["concise"] == 0.0
+
+
+def test_unopened_note_scores_only_format():
+    s = R.score_all("<facts_used>x</facts_used> the video shows", ROW)
+    assert s["truncated"] == 0.0 and s["grounding"] == 0.0 and s["concise"] == 0.0
+
+
+def test_concise_penalises_length_repeats_and_trailing_text():
+    base = note(PERFECT_STEPS, PERFECT_INSTR)
+    assert R.score_all(base, ROW)["concise"] == 1.0
+    tight = dict(ROW, length_soft_tokens=50, length_hard_tokens=400)
+    assert 0.0 < R.score_all(base, tight)["concise"] < 1.0
+    repeated = note(PERFECT_STEPS[:1] + ["- Nasal corridor creation [00:05:00-00:06:00] (conf=0.9)"]
+                    + PERFECT_STEPS[1:], PERFECT_INSTR)
+    assert R.score_all(repeated, ROW)["concise"] < 1.0
+    assert R.score_all(base + "\n<facts>The video shows the surgeon performing an</facts>", ROW)["concise"] == 0.5
+
+
 def test_ece():
     assert R.expected_calibration_error([(1.0, 1.0), (0.0, 0.0)]) == 0.0
     assert R.expected_calibration_error([(None, 1.0)]) is None

@@ -82,14 +82,19 @@ def grpo_cmd(cfg, dataset, out_dir, start_adapter=None):
         "--per_device_train_batch_size", str(g["per_device_train_batch_size"]),
         "--gradient_accumulation_steps", str(g["gradient_accumulation_steps"]),
         "--learning_rate", str(g["learning_rate"]),
-        "--lr_scheduler_type", "constant_with_warmup", "--warmup_steps", str(g["warmup_steps"]),
+        "--lr_scheduler_type", g.get("lr_scheduler_type", "cosine"), "--warmup_steps", str(g["warmup_steps"]),
         "--max_steps", str(g["max_steps"]), "--num_train_epochs", "100",
         "--temperature", str(g["temperature"]), "--beta", str(g["beta"]),
+        "--max_grad_norm", str(g.get("max_grad_norm", 0.5)),
         "--max_length", str(g["max_length"]), "--max_completion_length", str(g["max_completion_length"]),
-        "--save_steps", str(g["save_steps"]), "--save_total_limit", "5",
+        "--save_steps", str(g["save_steps"]), "--save_only_model", "false",
         "--logging_steps", "1", "--log_completions", "true",
         "--output_dir", out_dir, "--report_to", g["report_to"],
     ]
+    if g.get("loss_type"):
+        cmd += ["--loss_type", g["loss_type"]]
+    if g.get("save_total_limit"):  # null keeps every checkpoint
+        cmd += ["--save_total_limit", str(g["save_total_limit"])]
     if g["use_vllm"]:
         cmd += ["--use_vllm", "true", "--vllm_mode", g["vllm_mode"],
                 "--vllm_gpu_memory_utilization", str(g["vllm_gpu_memory_utilization"]),
@@ -107,7 +112,8 @@ def main():
     ap.add_argument("--output-subdir", help="work_dir subdir for checkpoints (default: the stage name)")
     ap.add_argument("--start-adapter", help="GRPO only: LoRA checkpoint to start from (overrides config)")
     ap.add_argument("--resume", action="store_true",
-                    help="continue from the newest checkpoint in the output dir if one exists (Spot restarts)")
+                    help="continue from the highest-step full checkpoint in the output dir, if any")
+    ap.add_argument("--resume-from", help="continue from this specific checkpoint directory")
     ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
                     help="config overrides, e.g. grpo.max_steps=40 sft.enabled=true")
     args = ap.parse_args()
@@ -129,7 +135,9 @@ def main():
     dataset = args.dataset or f"{args.stage}_train.jsonl"
     dataset = dataset if Path(dataset).is_absolute() else str(wpath(cfg, "datasets", dataset))
     out_dir = str(wpath(cfg, sub))
-    resume_from = find_latest_checkpoint(out_dir) if args.resume else None
+    resume_from = args.resume_from or (find_latest_checkpoint(out_dir, resumable=True) if args.resume else None)
+    if resume_from and not (Path(resume_from) / "optimizer.pt").exists():
+        raise SystemExit(f"{resume_from} is not a full checkpoint (no optimizer.pt) -- cannot resume from it")
     cmd = (sft_cmd(cfg, dataset, out_dir) if args.stage == "sft"
            else grpo_cmd(cfg, dataset, out_dir, None if resume_from else args.start_adapter))
     if resume_from:

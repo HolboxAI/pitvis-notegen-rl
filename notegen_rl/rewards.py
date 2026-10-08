@@ -5,7 +5,7 @@ prompt only showed the model *predicted* facts. So the policy is rewarded for wr
 correct note from imperfect perception -- including dropping perception errors and
 being honest about uncertainty -- not for copying its input.
 
-Components (all in [0, 1]; all but `format` are 0 for a malformed note):
+Components (all in [0, 1]):
   format       graded tag presence/order + fraction of item lines with a parseable conf
   grounding    mean of step-F1 and instrument-F1. Claims = every allowed name mentioned
                anywhere in <note>, so hallucinated names cost precision. Recall is
@@ -14,6 +14,14 @@ Components (all in [0, 1]; all but `format` are 0 for a malformed note):
   calibration  1 - mean Brier score of per-line conf vs correctness (missing conf = worst case)
   temporal     mean IoU between each step line's [start-end] and that step's labeled time
   safety       findings and complications left as the surgeon placeholder (not invented)
+  concise      length and repetition control: 1 up to a soft token budget, falling linearly to 0
+               at the hard budget; scaled by (1 - share of step lines that repeat the previous
+               line's step) and halved when text continues after </note>
+
+A complete note scores every component in full. A truncated note (<note> opened but never
+closed) keeps partial credit: grounding, calibration, temporal and safety are computed on the
+lines it did finish and multiplied by `truncation_credit`, and concise is 0. Anything else
+(no <facts_used>/<note>) scores only format.
 """
 from __future__ import annotations
 
@@ -23,8 +31,12 @@ import re
 from .prompts import PLACEHOLDER, SECTIONS
 
 ROW_KEYS = ("gold_steps", "gold_steps_any", "gold_instruments", "gold_instruments_any",
-            "gold_segments", "step_vocab", "instrument_vocab", "reliability", "reliability_floor")
-COMPONENTS = ("format", "grounding", "calibration", "temporal", "safety")
+            "gold_segments", "step_vocab", "instrument_vocab", "reliability", "reliability_floor",
+            "length_soft_tokens", "length_hard_tokens", "chars_per_token", "truncation_credit")
+COMPONENTS = ("format", "grounding", "calibration", "temporal", "safety", "concise")
+DEFAULTS = {"length_soft_tokens": 600, "length_hard_tokens": 900, "chars_per_token": 3.8,
+            "truncation_credit": 0.5}
+TRAILING_CHARS_ALLOWED = 20
 
 _THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
 _CONF = re.compile(r"conf(?:idence)?\s*[=:]\s*(\d*\.?\d+)", re.I)
@@ -73,11 +85,16 @@ class ParsedNote:
         text = _THINK.sub("", text or "")
         mf = re.search(r"<facts_used>.*?</facts_used>", text, re.S | re.I)
         mn = re.search(r"<note>(.*?)</note>", text, re.S | re.I)
+        mo = re.search(r"<note>(.*)$", text, re.S | re.I) if not mn else None   # opened, never closed
         self.has_facts_used, self.has_note = bool(mf), bool(mn)
-        self.body = mn.group(1) if mn else ""
+        self.truncated = bool(mo) and bool(mf) and mf.start() < mo.start()
+        self.body = mn.group(1) if mn else (mo.group(1) if self.truncated else "")
+        self.trailing_chars = len(text[mn.end():].strip()) if mn else 0
         self.sections, positions = {}, []
         for tag in SECTIONS:
             m = re.search(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", self.body, re.S | re.I)
+            if not m and self.truncated:  # last section cut off mid-way
+                m = re.search(rf"<{tag}(?:\s[^>]*)?>(.*)$", self.body, re.S | re.I)
             if m:
                 self.sections[tag] = m.group(1)
                 positions.append(m.start())
@@ -198,16 +215,47 @@ def safety(p: ParsedNote) -> float:
                if PLACEHOLDER.lower() in p.sections.get(tag, "").lower())
 
 
+def _param(row: dict, key: str) -> float:
+    v = row.get(key)
+    return float(v) if v not in (None, "") else float(DEFAULTS[key])
+
+
+def repeated_step_share(p: ParsedNote, row: dict) -> float:
+    """Share of step lines naming the same step as the line directly above them."""
+    vocab = _load(row.get("step_vocab"), [])
+    names = [(match_terms(it.text, vocab) or [""])[0] for it in p.step_items]
+    if len(names) < 2:
+        return 0.0
+    repeats = sum(1 for a, b in zip(names, names[1:]) if a and a == b)
+    return repeats / len(names)
+
+
+def concise(text: str, p: ParsedNote, row: dict) -> float:
+    if not p.ok:
+        return 0.0
+    tokens = len(text) / _param(row, "chars_per_token")
+    soft, hard = _param(row, "length_soft_tokens"), _param(row, "length_hard_tokens")
+    length = 1.0 if tokens <= soft else max(0.0, 1.0 - (tokens - soft) / max(1.0, hard - soft))
+    tail = 0.5 if p.trailing_chars > TRAILING_CHARS_ALLOWED else 1.0
+    return length * (1.0 - repeated_step_share(p, row)) * tail
+
+
 def score_all(text: str, row: dict) -> dict:
     p = ParsedNote(text)
-    out = {"format": format_score(p), "parsed_ok": float(p.ok)}
-    if not p.ok:
+    out = {"format": format_score(p), "parsed_ok": float(p.ok), "truncated": float(p.truncated),
+           "concise": concise(text, p, row)}
+    if p.ok:
+        credit = 1.0
+    elif p.truncated:
+        credit = _param(row, "truncation_credit")
+    else:
         out.update(grounding=0.0, calibration=0.0, temporal=0.0, safety=0.0, conf_pairs=[])
         return out
-    out.update(grounding(p, row))
+    g = grounding(p, row)
     pairs = calibration_pairs(p, row)
-    out.update(calibration=calibration(pairs), temporal=temporal(p, row), safety=safety(p),
-               conf_pairs=pairs)
+    out.update(g)
+    out.update(grounding=credit * g["grounding"], calibration=credit * calibration(pairs),
+               temporal=credit * temporal(p, row), safety=credit * safety(p), conf_pairs=pairs)
     return out
 
 
