@@ -22,9 +22,16 @@ if [[ -n $L ]]; then
 fi
 echo "--- run outputs ($RUNS)"
 aws s3 ls "$RUNS/" | awk '{print "  " $NF}'
-# GRPO progress (training log is pushed to S3 every 10 min by job_full_grpo.sh)
-P=$(aws s3 ls "$RUNS/grpo/" --recursive 2>/dev/null | grep 'logging.jsonl' | sort | tail -1 | awk '{print $4}')
+# GRPO progress for GRPO_DIR (default grpo_v2; logs and checkpoints are pushed to S3 every 5 min)
+G=${GRPO_DIR:-grpo_v2}
+P=$(aws s3 ls "$RUNS/$G/" --recursive 2>/dev/null | grep 'logging.jsonl' | sort | tail -1 | awk '{print $4}')
 if [[ -n $P ]]; then
+  echo "--- GRPO ($G):"
   aws s3 cp "s3://stanford-segment-clips/$P" - 2>/dev/null | jq -r -s \
-    'map(select(.reward != null and .["global_step/max_steps"] != null)) | last | "--- GRPO full run: step \(.["global_step/max_steps"]) | reward \(.reward) | grounding \(.["rewards/NoteGrounding/mean"]) | elapsed \(.elapsed_time) | remaining \(.remaining_time)"' 2>/dev/null
+    'map(select(.reward != null and .["global_step/max_steps"] != null)) | last | "  step \(.["global_step/max_steps"]) | reward \(.reward) | grounding \(.["rewards/NoteGrounding/mean"]) | concise \(.["rewards/NoteConcise/mean"] // "-") | length \(.["completions/mean_length"]) | kl \(.kl) | grad \(.grad_norm) | elapsed \(.elapsed_time) | remaining \(.remaining_time)"' 2>/dev/null
+  echo "  checkpoints in S3: $(aws s3 ls "$RUNS/$G/" --recursive | grep -o 'checkpoint-[0-9]*/optimizer.pt' | sed 's#/optimizer.pt##' | sort -t- -k2n | tr '\n' ' ')"
+  aws s3 cp "$RUNS/$G/.watchdog_stop" - 2>/dev/null | sed 's/^/  WATCHDOG STOP: /'
+  aws s3 cp "$RUNS/$G/best_checkpoint.json" - 2>/dev/null | jq -r '"  selected checkpoint: step \(.step) (validation weighted total \(.validation_weighted_total))"' 2>/dev/null
 fi
+E=${EVAL_DIR:-eval_v2}
+aws s3 cp "$RUNS/$E/summary.md" - 2>/dev/null | sed "s/^/  [$E] /"

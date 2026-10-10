@@ -78,6 +78,17 @@ Smoke test (10 full procedures, 40-step GRPO pilot): all generated notes parse i
 format, training reward rose from 1.62 to 1.78, and the calibration error of the stated confidences
 fell from 0.194 to 0.168.
 
+Full GRPO run (400 steps, checkpoint selected on the validation videos; held-out videos 21–25, 85 prompts):
+
+| System | Combined reward | Grounding | Instrument F1 | Calibration | ECE ↓ | Timing | Concise |
+|---|---|---|---|---|---|---|---|
+| Template (perception only) | 2.244 | 0.737 | 0.634 | 0.888 | 0.171 | 0.414 | 0.877 |
+| Base model | 2.238 | 0.735 | 0.649 | 0.878 | 0.205 | 0.480 | 0.840 |
+| GRPO | **2.364** | **0.760** | **0.681** | **0.898** | **0.157** | **0.534** | **0.990** |
+
+Metrics, generated notes, training log and the results report are in
+[`results/full_grpo_run/`](results/full_grpo_run/).
+
 ## Setup and running
 
 ```bash
@@ -121,6 +132,7 @@ run_pipeline.sh      stages 0-6
 notegen_rl/          data, endofm, step_model, facts, prompts, rewards, swift_plugin, llm, render, final_notes
 scripts/00-10        one script per stage, plus grpo_watchdog.py
 infra/               EC2 user-data, S3-driven job scripts, status and watch helpers
+results/             full GRPO run: report, metrics, generated notes, training log
 tests/               reward, facts, final-note, watchdog and checkpoint unit tests (pytest)
 ```
 
