@@ -27,15 +27,55 @@ def test_plan_merges_fragments_and_flags():
     assert [i["name"] for i in pl["instruments"] if i["verify"]] == ["Tissue glue"]
 
 
-def test_template_prose_is_faithful():
+def test_plan_lists_each_step_once_with_best_confidence():
     pl = F.plan(NOTE, STEPS, INSTR)
-    assert F.verify(F.template_prose(pl, "Endoscopic transsphenoidal pituitary surgery"), pl, STEPS, INSTR) == []
+    sinus = [e for e in pl["steps"] if e["step"] == "Sphenoid sinus clearance"][0]
+    assert sinus["occurrences"] == 1 and sinus["max_conf"] == 0.90 and not sinus["verify"]
+    assert [e["step"] for e in pl["steps"]] == ["Nasal corridor creation", "Sphenoid sinus clearance", "Tumour excision"]
 
 
-def test_verify_catches_invented_content():
+def test_template_prose_is_faithful_narrative():
+    pl = F.plan(NOTE, STEPS, INSTR)
+    text = F.template_prose(pl, "Endoscopic transsphenoidal pituitary surgery")
+    assert text.startswith("The patient underwent endoscopic transsphenoidal pituitary surgery for " + F.INDICATION_PH)
+    assert "00:" not in text and "tissue glue [verify]" in text and F.POSTOP_PH in text
+    assert F.verify(text, pl, STEPS, INSTR) == []
+
+
+def test_verify_reads_paraphrases_and_catches_invented_or_missing_steps():
     pl = F.plan(NOTE, STEPS, INSTR)
     good = F.template_prose(pl, "p")
-    assert any("Kerrisons" in p for p in F.verify(good.replace("Suction", "Suction, Kerrisons"), pl, STEPS, INSTR))
-    assert any("time" in p for p in F.verify(good.replace("00:30:00", "00:31:00"), pl, STEPS, INSTR))
-    bad = good.replace("COMPLICATIONS\n" + PLACEHOLDER, "COMPLICATIONS\nNone.")
-    assert any("complications" in p for p in F.verify(bad, pl, STEPS, INSTR))
+    assert any("Durotomy" in p for p in F.verify(good.replace("the tumour was excised",
+                                                              "the dura was opened and the tumour was excised"),
+                                                 pl, STEPS, INSTR))
+    assert any("not mentioned: Tumour excision" in p for p in F.verify(good.replace(" Finally, the tumour was excised.", ""),
+                                                                      pl, STEPS, INSTR))
+    assert any("Kerrisons" in p for p in F.verify(good.replace("suction", "suction, Kerrisons"), pl, STEPS, INSTR))
+    assert any("times" in p for p in F.verify(good.replace("was created", "was created at 00:00:10"), pl, STEPS, INSTR))
+
+
+def test_verify_rejects_what_the_video_cannot_show_unless_given():
+    pl = F.plan(NOTE, STEPS, INSTR)
+    good = F.template_prose(pl, "p")
+    claim = good.replace(F.POSTOP_PH, "The patient tolerated the procedure well and was discharged home.")
+    assert any("cannot support" in p for p in F.verify(claim, pl, STEPS, INSTR))
+    case = {"indication": "a non-functioning pituitary macroadenoma",
+            "postoperative": "The patient tolerated the procedure well and was discharged home."}
+    given = F.template_prose(pl, "p", case)
+    assert "macroadenoma" in given and F.verify(given, pl, STEPS, INSTR, case) == []
+    assert any("complications" in p for p in F.verify(good.replace("Complications: " + PLACEHOLDER, "Complications: None."),
+                                                      pl, STEPS, INSTR))
+
+
+def test_verify_keeps_verify_markers_and_strips_reasoning():
+    note = NOTE.replace("Tumour excision [00:10:00-00:30:00] (conf=0.92)", "Tumour excision [00:10:00-00:30:00] (conf=0.42)")
+    pl = F.plan(note, STEPS, INSTR)
+    good = F.template_prose(pl, "p")
+    assert "the tumour was excised [verify]" in good and F.verify(good, pl, STEPS, INSTR) == []
+    assert any("missing [verify]" in p for p in F.verify(good.replace("excised [verify]", "excised"), pl, STEPS, INSTR))
+    assert F.verify("<unused94>thought\nplan<unused95>" + good, pl, STEPS, INSTR) == []
+
+
+def test_phrases_allow_an_adverb():
+    assert {"Sellotomy", "Durotomy", "Tumour excision"} <= F.mentioned_steps(
+        "The sella was then opened, the dura was subsequently opened and the tumour was carefully excised.", STEPS)

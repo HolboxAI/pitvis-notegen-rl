@@ -4,8 +4,8 @@ Automated operative-note generation for endoscopic transsphenoidal pituitary sur
 A frozen endoscopy video foundation model (Endo-FM) and a temporal recogniser (MS-TCN) turn the
 surgical video into time-ordered steps and instruments. MedGemma 1.5 4B, trained with reinforcement
 learning (GRPO), writes a structured note from these facts together with keyframes taken from each
-detected step, and MedGemma-27B-text-it turns the structured note into clinical prose, checked by a
-deterministic verifier.
+detected step, and MedGemma-27B-text-it turns the structured note into a plain-language operative
+note ("The patient underwent ... The operation began with ..."), checked by a deterministic verifier.
 
 ## Architecture
 
@@ -24,8 +24,8 @@ video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ────────
 | Facts builder | Viterbi decoding, segmentation, per-class reliability from out-of-fold predictions | Time-ordered segments with confidence |
 | Keyframe selection | `notegen_rl/keyframes.py` | 1–2 frames per predicted segment, up to 16 per prompt |
 | Structured-note policy | MedGemma 1.5 4B + LoRA (rank 32), image encoder frozen, GRPO with ms-swift and vLLM | Steps with times and confidences, instruments, closure |
-| Final note writer | MedGemma-27B-text-it (FP8) | Clinical prose |
-| Verifier | Deterministic checker | Every step, instrument and time in the prose traced to the structured note |
+| Final note writer | MedGemma-27B-text-it (FP8), reply starting "The patient underwent" | Narrative operative note; indication and postoperative course from optional case details, otherwise surgeon placeholders |
+| Verifier | Deterministic checker | Every step (by name or phrase, e.g. "the sella was opened") and instrument traced to the structured note; identified steps all mentioned; [verify] flags kept; findings, complications and unobservable statements left to the surgeon |
 
 **Keyframes.** Each predicted segment in the prompt is followed by frames from inside it:
 
@@ -52,10 +52,11 @@ python scripts/04_build_datasets.py                 # prompts with keyframes -> 
 python scripts/05_train.py --stage grpo --resume    # GRPO (resumes from the newest full checkpoint)
 python scripts/06_evaluate.py                       # template, base and GRPO scored with the rewards
 python scripts/07_generate_note.py --video case.mp4 # note for a new video
-python scripts/09_final_notes.py --completions <eval>/grpo/completions.jsonl
+python scripts/09_final_notes.py --completions <eval>/grpo/completions.jsonl [--case-details cases.json]
 ```
 
-All settings are in `config.yaml`. MedGemma models are gated on Hugging Face (`HF_TOKEN`).
+All settings are in `config.yaml`, including generation controls for MedGemma (`llm.response_prefix`,
+`llm.suppress_tokens`, `llm.repetition_penalty`, `grpo.repetition_penalty`). MedGemma models are gated on Hugging Face (`HF_TOKEN`).
 `infra/` holds the S3-driven EC2 job scripts.
 
 ## Layout

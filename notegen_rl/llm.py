@@ -109,8 +109,14 @@ class Generator:
                        gpu_memory_utilization=self.cfg["gpu_memory_utilization"],
                        tensor_parallel_size=self.cfg["tensor_parallel_size"], **extra)
         stop = self.cfg.get("stop") or []
+        extra_sp = {}
+        banned = self._banned_ids(self.llm.get_tokenizer())
+        if banned:  # e.g. MedGemma's reasoning-block opener: never start a reasoning block
+            extra_sp["logit_bias"] = {i: -100.0 for i in banned}
         self.sp = SamplingParams(temperature=self.temperature, max_tokens=self.cfg["max_new_tokens"],
-                                 stop=stop or None, include_stop_str_in_output=bool(stop))
+                                 stop=stop or None, include_stop_str_in_output=bool(stop),
+                                 repetition_penalty=float(self.cfg.get("repetition_penalty") or 1.0),
+                                 skip_special_tokens=False, **extra_sp)
         self.lora = None
         if self.adapter:
             from vllm.lora.request import LoRARequest
@@ -150,6 +156,15 @@ class Generator:
             model = PeftModel.from_pretrained(model, self.adapter).merge_and_unload()
         self.model = model.eval()
 
+    def _banned_ids(self, tok) -> list:
+        """Token ids of llm.suppress_tokens (tokens the model must never generate)."""
+        ids = []
+        for t in self.cfg.get("suppress_tokens") or []:
+            i = tok.convert_tokens_to_ids(t)
+            if i is not None and i != getattr(tok, "unk_token_id", None):
+                ids.append(int(i))
+        return ids
+
     def _turn_kwargs(self) -> dict:
         if self.cfg.get("response_prefix"):
             return {"add_generation_prompt": False, "continue_final_message": True}
@@ -177,10 +192,15 @@ class Generator:
                     prompt = self.tok.apply_chat_template(conv, tokenize=False, **self._turn_kwargs())
                 ids = self.tok(prompt, return_tensors="pt").to(self.model.device)
             with torch.no_grad():
+                banned = self._banned_ids(self.tok)
                 gen = self.model.generate(**ids, max_new_tokens=self.cfg["max_new_tokens"],
+                                          repetition_penalty=float(self.cfg.get("repetition_penalty") or 1.0),
+                                          **({"suppress_tokens": banned} if banned else {}),
                                           do_sample=self.temperature > 0,
                                           temperature=self.temperature if self.temperature > 0 else None)
-            text = self.tok.decode(gen[0, ids["input_ids"].shape[1]:], skip_special_tokens=True)
+            text = self.tok.decode(gen[0, ids["input_ids"].shape[1]:], skip_special_tokens=False)
+            text = text.split(self.tok.eos_token)[0] if self.tok.eos_token else text
+            text = text.replace("<end_of_turn>", "")
             for s in self.cfg.get("stop") or []:
                 if s in text:
                     text = text[:text.index(s) + len(s)]

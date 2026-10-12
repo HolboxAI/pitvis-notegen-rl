@@ -109,6 +109,8 @@ llm:
   # Reply prefix: an empty, closed MedGemma thought block, so the note is written directly
   # (training: ms-swift --response_prefix; evaluation / inference: continued assistant turn).
   response_prefix: "<unused94>thought\n<unused95>"
+  suppress_tokens: ["<unused94>"]   # never open another reasoning block (evaluation, inference, final notes)
+  repetition_penalty: 1.0           # >1 discourages repeated tokens (evaluation, inference, final notes)
   max_model_len: 10240              # keyframe prompts (up to 16 x 256 image tokens) + completion
   gpu_memory_utilization: 0.85      # eval / inference only
   tensor_parallel_size: 1
@@ -133,6 +135,7 @@ grpo:
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
   temperature: 1.0
+  repetition_penalty: 1.0           # >1 discourages repeated tokens in the sampled candidate notes
   beta: 0.03                        # KL penalty towards the base model
   max_grad_norm: 0.5
   loss_type: dr_grpo                # length-unbiased GRPO loss (ms-swift loss_type)
@@ -166,4 +169,5 @@ final_notes:                        # stage 9: structured note -> human-readable
   quantization: fp8                 # 27B in FP8 fits one 48 GB GPU
   max_new_tokens: 900
   retries: 1                        # regenerate once if verification fails, then use rule-based prose
+  answer_start: "The patient underwent"   # opening words the writer's note continues from
   full_procedures_only: true

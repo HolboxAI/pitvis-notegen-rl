@@ -96,6 +96,8 @@ def grpo_cmd(cfg, dataset, out_dir, start_adapter=None):
     ]
     if g.get("loss_type"):
         cmd += ["--loss_type", g["loss_type"]]
+    if float(g.get("repetition_penalty") or 1.0) != 1.0:  # applied to the sampled candidate notes
+        cmd += ["--repetition_penalty", str(g["repetition_penalty"])]
     if g.get("save_total_limit"):  # null keeps every checkpoint
         cmd += ["--save_total_limit", str(g["save_total_limit"])]
     if g["use_vllm"]:
