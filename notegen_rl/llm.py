@@ -119,6 +119,8 @@ class Generator:
     def _gen_vllm(self, convs):
         convs = [_for_vllm(c) for c in convs]
         kw = dict(sampling_params=self.sp, lora_request=self.lora)
+        if self.cfg.get("response_prefix"):
+            kw.update(add_generation_prompt=False, continue_final_message=True)
         try:
             outs = self.llm.chat(convs, chat_template_kwargs={"enable_thinking": False}, **kw)
         except TypeError:
@@ -148,6 +150,11 @@ class Generator:
             model = PeftModel.from_pretrained(model, self.adapter).merge_and_unload()
         self.model = model.eval()
 
+    def _turn_kwargs(self) -> dict:
+        if self.cfg.get("response_prefix"):
+            return {"add_generation_prompt": False, "continue_final_message": True}
+        return {"add_generation_prompt": True}
+
     def _gen_hf(self, convs):
         import torch
         outs = []
@@ -158,16 +165,16 @@ class Generator:
                         {"role": m["role"], "content": [p if p["type"] != "image" else
                                                         {"type": "image", "image": Image.open(p["path"]).convert("RGB")}
                                                         for p in m["content"]]} for m in conv]
-                ids = self.proc.apply_chat_template(conv, add_generation_prompt=True, tokenize=True,
-                                                    return_dict=True, return_tensors="pt").to(self.model.device)
+                ids = self.proc.apply_chat_template(conv, tokenize=True, return_dict=True, return_tensors="pt",
+                                                    **self._turn_kwargs()).to(self.model.device)
                 if "pixel_values" in ids:
                     ids["pixel_values"] = ids["pixel_values"].to(self.model.dtype)
             else:
                 try:
-                    prompt = self.tok.apply_chat_template(conv, tokenize=False, add_generation_prompt=True,
-                                                          enable_thinking=False)
+                    prompt = self.tok.apply_chat_template(conv, tokenize=False, enable_thinking=False,
+                                                          **self._turn_kwargs())
                 except TypeError:
-                    prompt = self.tok.apply_chat_template(conv, tokenize=False, add_generation_prompt=True)
+                    prompt = self.tok.apply_chat_template(conv, tokenize=False, **self._turn_kwargs())
                 ids = self.tok(prompt, return_tensors="pt").to(self.model.device)
             with torch.no_grad():
                 gen = self.model.generate(**ids, max_new_tokens=self.cfg["max_new_tokens"],
@@ -180,5 +187,12 @@ class Generator:
             outs.append(text)
         return outs
 
+    def _prefixed(self, convs: list) -> list:
+        """With llm.response_prefix, each conversation ends in an assistant turn holding the prefix,
+        which generation continues; the returned text is the continuation only."""
+        prefix = self.cfg.get("response_prefix")
+        return [c + [{"role": "assistant", "content": prefix}] for c in convs] if prefix else convs
+
     def generate(self, convs: list) -> list:
+        convs = self._prefixed(convs)
         return self._gen_vllm(convs) if self.backend == "vllm" else self._gen_hf(convs)

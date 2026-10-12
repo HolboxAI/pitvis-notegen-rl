@@ -138,3 +138,13 @@ def test_swift_plugin_orms():
     kwargs = {k: [v, v] for k, v in ROW.items()}
     assert P.orms["note_grounding"]()(comps, **kwargs) == [1.0, 0.0]
     assert set(P.orms) >= {"note_format", "note_grounding", "note_calibration", "note_temporal", "note_safety"}
+
+
+def test_medgemma_thought_block_is_not_part_of_the_note():
+    from notegen_rl.rewards import ParsedNote
+    note = ("<facts_used>x</facts_used>\n<note>\n<procedure>p</procedure>\n<findings>[SURGEON TO COMPLETE]</findings>\n"
+            "<steps>\n- Tumour excision [00:01:00-00:02:00] (conf=0.80)\n</steps>\n<instruments>\n</instruments>\n"
+            "<complications>[SURGEON TO COMPLETE]</complications>\n<closure>c</closure>\n</note>")
+    thought = "<unused94>thought\nlist rules: <note> ... nothing after </note>\n<unused95>"
+    assert ParsedNote(thought + note).ok and ParsedNote(note).ok
+    assert [i.text for i in ParsedNote(thought + note).step_items] == [i.text for i in ParsedNote(note).step_items]

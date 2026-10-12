@@ -38,7 +38,8 @@ DEFAULTS = {"length_soft_tokens": 600, "length_hard_tokens": 900, "chars_per_tok
             "truncation_credit": 0.5}
 TRAILING_CHARS_ALLOWED = 20
 
-_THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
+# reasoning blocks are not part of the note: <think>...</think>, MedGemma <unused94>thought...<unused95>
+_THINK = re.compile(r"<think>.*?</think>|<unused94>.*?<unused95>", re.S | re.I)
 _CONF = re.compile(r"conf(?:idence)?\s*[=:]\s*(\d*\.?\d+)", re.I)
 _TS = r"(\d{1,2}:\d{2}(?::\d{2})?)"
 _RANGE = re.compile(_TS + r"\s*[-–—]\s*" + _TS)

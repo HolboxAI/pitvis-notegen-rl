@@ -106,6 +106,9 @@ llm:
   cold_start_adapter: null          # optional LoRA dir to start from (e.g. a synced copy of A_s189)
   max_new_tokens: 1536
   stop: ["</note>"]                 # generation ends at the closing note tag
+  # Reply prefix: an empty, closed MedGemma thought block, so the note is written directly
+  # (training: ms-swift --response_prefix; evaluation / inference: continued assistant turn).
+  response_prefix: "<unused94>thought\n<unused95>"
   max_model_len: 10240              # keyframe prompts (up to 16 x 256 image tokens) + completion
   gpu_memory_utilization: 0.85      # eval / inference only
   tensor_parallel_size: 1
