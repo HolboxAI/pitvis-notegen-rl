@@ -37,6 +37,16 @@ def wpath(cfg, *parts, mkdir: bool = False) -> Path:
     return p
 
 
+def datasets_subdir(cfg) -> str:
+    """work_dir subdir of the GRPO / eval datasets: prompts with keyframes are kept apart from
+    the text-only prompts, so both variants can share one work_dir and results_uri."""
+    return "datasets_keyframes" if (cfg.get("keyframes") or {}).get("enabled") else "datasets"
+
+
+def dataset_path(cfg, *parts, mkdir: bool = False) -> Path:
+    return wpath(cfg, datasets_subdir(cfg), *parts, mkdir=mkdir)
+
+
 def upload_results(cfg, *parts) -> None:
     """Sync a work_dir subpath to `results_uri` (no-op when unset)."""
     uri = cfg.get("results_uri")

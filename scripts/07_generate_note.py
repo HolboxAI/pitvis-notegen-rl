@@ -4,6 +4,8 @@
 
 Writes <work_dir>/notes/<video stem>.{md,json}. Lines below eval.hedge_threshold confidence
 are marked [verify]; findings/complications are left for the surgeon. Always a draft.
+With keyframes.enabled, keyframes are decoded from the video for every predicted segment and
+saved to <work_dir>/notes/<video stem>_keyframes/.
 """
 import argparse
 import json
@@ -19,7 +21,8 @@ from notegen_rl.config import load_config, wpath  # noqa: E402
 from notegen_rl.data import Taxonomy  # noqa: E402
 from notegen_rl.endofm import extract, load_backbone, video_duration_s  # noqa: E402
 from notegen_rl.facts import facts_from_predictions  # noqa: E402
-from notegen_rl.llm import Generator, find_latest_checkpoint  # noqa: E402
+from notegen_rl.keyframes import VideoFrames, image_paths, select_keyframes  # noqa: E402
+from notegen_rl.llm import Generator, find_latest_checkpoint, to_conversation  # noqa: E402
 from notegen_rl.prompts import build_messages, render_template_note  # noqa: E402
 from notegen_rl.render import to_markdown  # noqa: E402
 from notegen_rl.step_model import predict  # noqa: E402
@@ -55,22 +58,31 @@ def main():
     facts, _ = facts_from_predictions(video.stem, got["times"], sp, ip, tax, cfg["facts"],
                                       bundle["log_trans"], bundle["log_init"])
     procedure = cfg["dataset"]["procedure_name"]
+    out_dir = wpath(cfg, "notes", mkdir=True)
+    kcfg = cfg.get("keyframes") or {}
+    kfs = []
     if args.template_only:
         completion, adapter = render_template_note(facts, procedure), None
     else:
         adapter = args.adapter or find_latest_checkpoint(wpath(cfg, "grpo"))
         if not adapter:
             print("WARNING: no GRPO checkpoint found -- using the untrained base model")
+        if kcfg.get("enabled"):
+            frames = VideoFrames(video, out_dir / f"{video.stem}_keyframes")
+            kfs = select_keyframes(facts, got["times"], sp, tax, frames, kcfg)
         msgs = build_messages(facts, reliability, tax.surgical_steps, tax.instr_names, procedure,
-                              max_step_lines=cfg["dataset"].get("max_step_lines", 25))
-        completion = Generator(cfg["llm"]["base"], adapter, cfg["llm"]).generate([msgs])[0]
+                              max_step_lines=cfg["dataset"].get("max_step_lines", 25), keyframes=kfs or None)
+        conv = to_conversation({"messages": msgs, "images": image_paths(kfs)})
+        completion = Generator(cfg["llm"]["base"], adapter, cfg["llm"],
+                               max_images=len(kfs)).generate([conv])[0]
 
-    out_dir = wpath(cfg, "notes", mkdir=True)
     md = to_markdown(completion, cfg["eval"]["hedge_threshold"], video.name)
     (out_dir / f"{video.stem}.md").write_text(md)
     (out_dir / f"{video.stem}.json").write_text(json.dumps({
         "video": str(video), "adapter": adapter, "duration_s": duration,
-        "facts": [s.__dict__ for s in facts.segments], "completion": completion}, indent=2))
+        "facts": [s.__dict__ for s in facts.segments],
+        "keyframes": [{"segment": k.segment, "t": k.t, "path": k.path} for k in kfs],
+        "completion": completion}, indent=2))
     print(md)
     print(f"\nsaved: {out_dir / (video.stem + '.md')}")
 

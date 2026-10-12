@@ -8,6 +8,7 @@ GRPO starts from (first match): the SFT adapter if sft.enabled, else llm.cold_st
 else the plain base model.
 """
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -18,7 +19,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from notegen_rl.config import PROJECT_DIR, load_config, resolve, upload_results, wpath  # noqa: E402
+from notegen_rl.config import PROJECT_DIR, dataset_path, load_config, resolve, upload_results, wpath  # noqa: E402
 from notegen_rl.llm import find_latest_checkpoint  # noqa: E402
 
 
@@ -100,6 +101,9 @@ def grpo_cmd(cfg, dataset, out_dir, start_adapter=None):
                 "--vllm_gpu_memory_utilization", str(g["vllm_gpu_memory_utilization"]),
                 "--vllm_max_model_len", str(g["max_length"] + g["max_completion_length"]),
                 "--sleep_level", "1"]
+        kcfg = cfg.get("keyframes") or {}
+        if kcfg.get("enabled"):  # keyframe prompts: room for every image of a prompt in vLLM
+            cmd += ["--vllm_limit_mm_per_prompt", json.dumps({"image": int(kcfg["max_images_per_prompt"])})]
     return cmd + [str(a) for a in g.get("extra_args") or []]
 
 
@@ -108,7 +112,8 @@ def main():
     ap.add_argument("--config")
     ap.add_argument("--stage", choices=["sft", "grpo"], required=True)
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--dataset", help="file under work_dir/datasets (default: sft_train / grpo_train .jsonl)")
+    ap.add_argument("--dataset", help="file under the datasets dir (work_dir/datasets, or datasets_keyframes "
+                                      "with keyframes.enabled; default: sft_train / grpo_train .jsonl)")
     ap.add_argument("--output-subdir", help="work_dir subdir for checkpoints (default: the stage name)")
     ap.add_argument("--start-adapter", help="GRPO only: LoRA checkpoint to start from (overrides config)")
     ap.add_argument("--resume", action="store_true",
@@ -133,7 +138,7 @@ def main():
 
     sub = args.output_subdir or args.stage
     dataset = args.dataset or f"{args.stage}_train.jsonl"
-    dataset = dataset if Path(dataset).is_absolute() else str(wpath(cfg, "datasets", dataset))
+    dataset = dataset if Path(dataset).is_absolute() else str(dataset_path(cfg, dataset))
     out_dir = str(wpath(cfg, sub))
     resume_from = args.resume_from or (find_latest_checkpoint(out_dir, resumable=True) if args.resume else None)
     if resume_from and not (Path(resume_from) / "optimizer.pt").exists():

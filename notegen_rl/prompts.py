@@ -19,6 +19,7 @@ Output format (parsed by rewards.py -- change both together):
 from __future__ import annotations
 
 PLACEHOLDER = "[SURGEON TO COMPLETE]"
+IMAGE_TAG = "<image>"            # one per keyframe, in order (ms-swift multimodal dataset format)
 SECTIONS = ["procedure", "findings", "steps", "instruments", "complications", "closure"]
 CLOSURE_KEYWORDS = ("graft", "seal", "packing", "closure", "reconstruction")
 
@@ -32,20 +33,36 @@ SYSTEM_PROMPT = (
     "reviews and signs."
 )
 
+KEYFRAME_SYSTEM = (
+    " Keyframes from the endoscopic video are shown under the detections they were taken from. "
+    "Use them to check each detection: keep what the frames support, and lower the confidence of, "
+    "or omit, detections the frames contradict. The frames do not replace the timeline -- times "
+    "and order come from the detections. Do not describe anatomy or pathology from the frames."
+)
+
+KEYFRAME_USER = (
+    "Under each detection, \"keyframe HH:MM:SS\" lines show frames taken from inside that "
+    "detected segment at that time."
+)
+
 
 def fmt_ts(seconds: float) -> str:
     s = int(round(seconds))
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def render_perception(facts, reliability: dict) -> str:
+def render_perception(facts, reliability: dict, keyframes: list | None = None) -> str:
+    by_seg = {}
+    for k in sorted(keyframes or [], key=lambda k: (k.segment, k.t)):
+        by_seg.setdefault(k.segment, []).append(k)
     lines = []
-    for seg in facts.segments:
+    for si, seg in enumerate(facts.segments):
         instr = ", ".join(f"{n} ({c:.2f})" for n, c in sorted(seg.instruments.items(), key=lambda x: -x[1]))
         rel = reliability.get(seg.step)
         rel_txt = f"; historical reliability {rel:.2f}" if rel is not None else ""
         lines.append(f"- [{fmt_ts(seg.start_s)}-{fmt_ts(seg.end_s)}] {seg.step} "
                      f"(confidence {seg.conf:.2f}{rel_txt}) | instruments: {instr or 'none detected'}")
+        lines += [f"  keyframe {fmt_ts(k.t)}: {IMAGE_TAG}" for k in by_seg.get(si, [])]
     return "\n".join(lines) if lines else "(the system detected no surgical steps in this interval)"
 
 
@@ -55,14 +72,17 @@ def render_instrument_reliability(instr_names: list, reliability: dict) -> str:
 
 
 def build_messages(facts, reliability: dict, step_vocab: list, instr_vocab: list,
-                   procedure: str, window: tuple | None = None, max_step_lines: int = 25) -> list:
+                   procedure: str, window: tuple | None = None, max_step_lines: int = 25,
+                   keyframes: list | None = None) -> list:
+    """Chat messages for one prompt. With keyframes, each one is an IMAGE_TAG placed under its
+    segment; the matching image list is keyframes.image_paths(keyframes)."""
     scope = (f"This excerpt covers {fmt_ts(window[0])}-{fmt_ts(window[1])} of the procedure. "
              f"Document only what happens inside it.\n" if window else
              "This is the complete procedure.\n")
     user = f"""Procedure: {procedure}
 {scope}
 Automatic perception output, time-ordered (may contain errors):
-{render_perception(facts, reliability)}
+{render_perception(facts, reliability, keyframes)}{chr(10) + KEYFRAME_USER if keyframes else ""}
 
 Historical reliability of instrument detection: {render_instrument_reliability(instr_vocab, reliability)}
 
@@ -89,7 +109,8 @@ Rules: one step or instrument per line; use the allowed names verbatim; omit any
 believe did not happen; conf is the probability the line is correct. Keep the note concise:
 list each step occurrence once, give one line spanning a step that is only briefly interrupted,
 never repeat a line, use at most {max_step_lines} step lines, and write nothing after </note>."""
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    system = SYSTEM_PROMPT + (KEYFRAME_SYSTEM if keyframes else "")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def render_template_note(facts, procedure: str) -> str:

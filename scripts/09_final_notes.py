@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from notegen_rl import final_notes as F  # noqa: E402
-from notegen_rl.config import load_config, resolve, upload_results, wpath  # noqa: E402
+from notegen_rl.config import dataset_path, load_config, resolve, upload_results, wpath  # noqa: E402
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
     fcfg = cfg["final_notes"]
     procedure = cfg["dataset"]["procedure_name"]
 
-    rows = {(r["video_id"], r["window"]): r for r in map(json.loads, open(wpath(cfg, "datasets", args.dataset)))}
+    rows = {(r["video_id"], r["window"]): r for r in map(json.loads, open(dataset_path(cfg, args.dataset)))}
     comps = [json.loads(line) for line in open(resolve(args.completions))]
     comps = [c for c in comps if not c["window"]] if fcfg.get("full_procedures_only", True) else comps
 

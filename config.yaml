@@ -68,6 +68,20 @@ facts:
   instrument_threshold: 0.5
   instrument_min_fraction: 0.2      # instrument listed if p>=threshold for >=20% of the segment
 
+keyframes:
+  # Facts + keyframes -> MedGemma: frames from inside every predicted segment are shown to the
+  # note writer under that segment's line (notegen_rl/keyframes.py). Uses data.frames_subdir.
+  # Datasets go to work_dir/datasets_keyframes/ (work_dir/datasets/ when disabled = text-only).
+  enabled: true
+  frames_per_segment: 1
+  long_segment_s: 300               # segments at least this long get frames_per_long_segment frames,
+  frames_per_long_segment: 2        # one from each equal part of the segment
+  max_images_per_prompt: 16         # MedGemma: 256 tokens per image
+  candidates: 8                     # most step-confident seconds checked per frame slot
+  out_of_patient_max: 0.5           # skip seconds whose non-surgical step probability reaches this
+  min_brightness: 25                # skip dark frames (mean intensity 0-255 of the centre square)
+  min_relative_sharpness: 0.5       # skip frames below this share of the sharpest candidate's sharpness
+
 dataset:
   include_full_video: true
   window_minutes: 15                # extra GRPO prompts: sub-windows of each procedure
@@ -84,14 +98,15 @@ dataset:
   truncation_credit: 0.5            # share of grounding/calibration/temporal/safety kept by a truncated note
 
 llm:
-  # Structured-note policy: MedGemma-4B (Gemma 3, medical). Used text-only: the vision tower is frozen
-  # (grpo.extra_args) and prompts carry the perception facts. Gated model: HF_TOKEN must be set.
-  base: google/medgemma-4b-it
-  model_type: null                  # ms-swift model_type (null = inferred by ms-swift)
+  # Structured-note policy: MedGemma 1.5 4B (Gemma 3, medical). Prompts carry the perception facts and,
+  # with keyframes.enabled, the keyframes, read by MedGemma's own image encoder (frozen during GRPO,
+  # grpo.extra_args). Gated model: HF_TOKEN must be set.
+  base: google/medgemma-1.5-4b-it   # EC2 jobs use the copy in S3 (operative-notes/models/) when present
+  model_type: gemma3_vision         # ms-swift model_type (null = inferred from llm.base by ms-swift)
   cold_start_adapter: null          # optional LoRA dir to start from (e.g. a synced copy of A_s189)
   max_new_tokens: 1536
   stop: ["</note>"]                 # generation ends at the closing note tag
-  max_model_len: 8192
+  max_model_len: 10240              # keyframe prompts (up to 16 x 256 image tokens) + completion
   gpu_memory_utilization: 0.85      # eval / inference only
   tensor_parallel_size: 1
 
@@ -118,7 +133,7 @@ grpo:
   beta: 0.03                        # KL penalty towards the base model
   max_grad_norm: 0.5
   loss_type: dr_grpo                # length-unbiased GRPO loss (ms-swift loss_type)
-  max_length: 4096                  # prompt tokens (vLLM context = max_length + max_completion_length)
+  max_length: 8192                  # prompt tokens incl. keyframes (vLLM context = max_length + max_completion_length)
   max_completion_length: 900
   use_vllm: true
   vllm_mode: colocate

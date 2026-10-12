@@ -4,6 +4,11 @@ One prompt per full procedure plus overlapping sub-windows. Prompts are built fr
 PREDICTED facts (out-of-fold for training videos); the reward columns hold the LABELS.
 All structured columns are JSON strings so the HF datasets/Arrow loader never has to
 infer types for mixed lists.
+
+With keyframes.enabled, every predicted segment also gets keyframes (notegen_rl/keyframes.py):
+`messages` carries one <image> tag per keyframe, `images` the matching files (copied to
+work_dir/keyframes/videoNN/), and `messages_text` the same prompt without keyframes. The
+datasets then go to work_dir/datasets_keyframes/.
 """
 import argparse
 import json
@@ -14,8 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np  # noqa: E402
 
-from notegen_rl.config import load_config, upload_results, wpath  # noqa: E402
+from notegen_rl.config import dataset_path, datasets_subdir, load_config, upload_results, wpath  # noqa: E402
 from notegen_rl.data import load_all  # noqa: E402
+from notegen_rl.keyframes import FrameDir, image_paths, select_keyframes, store_keyframes  # noqa: E402
 from notegen_rl.facts import facts_from_labels, facts_from_predictions, gold_sets  # noqa: E402
 from notegen_rl.prompts import build_messages, render_template_note  # noqa: E402
 
@@ -31,8 +37,9 @@ def windows(t_min, t_end, dcfg):
     return out
 
 
-def build_rows(cfg, tax, labels, v, reliability):
-    dcfg, fcfg = cfg["dataset"], cfg["facts"]
+def build_rows(cfg, tax, labels, v, reliability, frames=None):
+    """frames: FrameDir of this video's 1 fps frames when keyframes are enabled, else None."""
+    dcfg, fcfg, kcfg = cfg["dataset"], cfg["facts"], cfg.get("keyframes") or {}
     d = np.load(wpath(cfg, "predictions", f"video{v:02d}.npz"))
     times = d["times"]
     rows = []
@@ -49,9 +56,18 @@ def build_rows(cfg, tax, labels, v, reliability):
         if not gold_steps and not facts.segments:
             continue
         window = (t0, t1) if is_window else None
+        prompt_args = (facts, reliability, tax.surgical_steps, tax.instr_names, dcfg["procedure_name"],
+                       window, dcfg.get("max_step_lines", 25))
+        row = {"messages": build_messages(*prompt_args)}
+        if frames is not None:
+            kfs = select_keyframes(facts, times[m], d["step_probs"][m], tax, frames, kcfg)
+            kfs = store_keyframes(kfs, wpath(cfg, "keyframes", f"video{v:02d}"))
+            row = {"messages": build_messages(*prompt_args, keyframes=kfs),
+                   "images": image_paths(kfs),
+                   "messages_text": json.dumps(row["messages"]),
+                   "keyframe_times": json.dumps([k.t for k in sorted(kfs, key=lambda k: (k.segment, k.t))])}
         rows.append({
-            "messages": build_messages(facts, reliability, tax.surgical_steps, tax.instr_names,
-                                       dcfg["procedure_name"], window, dcfg.get("max_step_lines", 25)),
+            **row,
             "video_id": int(v),
             "window": json.dumps([t0, t1]) if window else "",
             "gold_steps": json.dumps(gold_steps),
@@ -85,31 +101,43 @@ def main():
     args = ap.parse_args()
     cfg = load_config(args.config)
 
-    _, tax, labels = load_all(cfg)
+    use_kf = bool((cfg.get("keyframes") or {}).get("enabled"))
+    if use_kf and not cfg["data"].get("frames_subdir"):
+        raise SystemExit("keyframes.enabled needs data.frames_subdir (pre-extracted 1 fps frames)")
+    layout, tax, labels = load_all(cfg, need_frames=use_kf)
     split = json.loads(wpath(cfg, "split.json").read_text())
     reliability = json.loads(wpath(cfg, "facts", "reliability.json").read_text())
-    out = wpath(cfg, "datasets", mkdir=True)
+    out = dataset_path(cfg, mkdir=True)
+
+    def frames(v):
+        return FrameDir(layout.root / cfg["data"]["frames_subdir"] / f"video{v:02d}") if use_kf else None
 
     # validation videos: training videos kept out of GRPO, used only to choose the checkpoint
     val_ids = [v for v in cfg["data"].get("val_video_ids") or [] if v in split["train"]]
     grpo_ids = [v for v in split["train"] if v not in val_ids]
-    train = [r for v in grpo_ids for r in build_rows(cfg, tax, labels, v, reliability)]
-    val = [r for v in val_ids for r in build_rows(cfg, tax, labels, v, reliability)]
-    test = [r for v in split["test"] for r in build_rows(cfg, tax, labels, v, reliability)]
+    train = [r for v in grpo_ids for r in build_rows(cfg, tax, labels, v, reliability, frames(v))]
+    val = [r for v in val_ids for r in build_rows(cfg, tax, labels, v, reliability, frames(v))]
+    test = [r for v in split["test"] for r in build_rows(cfg, tax, labels, v, reliability, frames(v))]
 
-    write_jsonl(out / "grpo_train.jsonl", [{k: x for k, x in r.items() if k != "template_note"} for r in train])
+    write_jsonl(out / "grpo_train.jsonl",
+                [{k: x for k, x in r.items() if k not in ("template_note", "messages_text")} for r in train])
     write_jsonl(out / "grpo_val.jsonl", val)
     write_jsonl(out / "grpo_eval.jsonl", test)
     print(f"GRPO training videos {grpo_ids} | validation videos {val_ids} | test videos {split['test']}")
     # SFT target = the deterministic template note from the same predicted facts: teaches the
     # output FORMAT only. GRPO is what teaches deviating from the perception output.
     write_jsonl(out / "sft_train.jsonl",
-                [{"messages": r["messages"] + [{"role": "assistant", "content": r["template_note"]}]}
-                 for r in train])
+                [{"messages": r["messages"] + [{"role": "assistant", "content": r["template_note"]}],
+                  **({"images": r["images"]} if "images" in r else {})} for r in train])
     full = sum(1 for r in train if not r["window"])
     print(f"train: {full} full-procedure + {len(train) - full} window prompts from {len(grpo_ids)} videos; "
           f"validation: {len(val)} prompts")
-    upload_results(cfg, "datasets")
+    if use_kf:
+        n_img = [len(r["images"]) for r in train + val + test]
+        print(f"keyframes per prompt: mean {np.mean(n_img):.1f}, max {max(n_img)}; "
+              f"{sum(n_img)} images in all prompts")
+        upload_results(cfg, "keyframes")
+    upload_results(cfg, datasets_subdir(cfg))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,10 @@ Systems compared (each gets eval/<name>/completions.jsonl + metrics.json):
   base      llm.base (+ cold_start_adapter if set), no note-specific training
   grpo      newest GRPO checkpoint under work_dir/grpo
   extra:    --adapter name=/path/to/checkpoint (repeatable)
+
+With keyframes.enabled the model systems see the keyframe prompts. --text-only evaluates the
+same systems on the same prompts without keyframes (results named <system>_text), which
+measures what the images add.
 """
 import argparse
 import json
@@ -14,8 +18,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from notegen_rl import rewards as R  # noqa: E402
-from notegen_rl.config import load_config, resolve, upload_results, wpath  # noqa: E402
-from notegen_rl.llm import Generator, find_latest_checkpoint  # noqa: E402
+from notegen_rl.config import dataset_path, load_config, resolve, upload_results, wpath  # noqa: E402
+from notegen_rl.llm import Generator, find_latest_checkpoint, to_conversation  # noqa: E402
 from notegen_rl.render import to_markdown  # noqa: E402
 
 METRICS = ("weighted_total", "format", "parsed_ok", "truncated", "concise", "grounding", "calibration",
@@ -65,14 +69,16 @@ def main():
     ap.add_argument("--systems", nargs="*", default=["template", "base", "grpo"])
     ap.add_argument("--adapter", action="append", default=[], help="name=path, repeatable")
     ap.add_argument("--limit", type=int, help="only the first N eval rows")
-    ap.add_argument("--dataset", default="grpo_eval.jsonl", help="file under work_dir/datasets (or a path)")
+    ap.add_argument("--dataset", default="grpo_eval.jsonl", help="file under the datasets dir (or a path)")
+    ap.add_argument("--text-only", action="store_true",
+                    help="prompts without keyframes; model systems are saved as <name>_text")
     ap.add_argument("--full-only", action="store_true", help="only full-procedure rows (no windows)")
     ap.add_argument("--out-subdir", default="eval", help="results go to work_dir/<out-subdir>")
     ap.add_argument("--grpo-dir", default="grpo", help="work_dir subdir searched for the newest GRPO checkpoint")
     args = ap.parse_args()
     cfg = load_config(args.config)
 
-    ds = Path(args.dataset) if Path(args.dataset).is_absolute() else wpath(cfg, "datasets", args.dataset)
+    ds = Path(args.dataset) if Path(args.dataset).is_absolute() else dataset_path(cfg, args.dataset)
     rows = [json.loads(line) for line in open(ds)]
     rows = [r for r in rows if not r["window"]] if args.full_only else rows
     rows = rows[:args.limit] if args.limit else rows
@@ -97,15 +103,18 @@ def main():
     for spec in args.adapter:
         name, path = spec.split("=", 1)
         systems[name] = path
+    if args.text_only:  # the template has no prompt, so it is the same in both settings
+        systems = {(n if a is None else f"{n}_text"): a for n, a in systems.items()}
 
     results = {}
-    convs = [r["messages"] for r in rows]
+    convs = [to_conversation(r, args.text_only) for r in rows]
+    max_images = 0 if args.text_only else max([len(r.get("images") or []) for r in rows] + [0])
     for name, adapter in systems.items():
         print(f"\n=== {name} {('(adapter ' + adapter + ')') if adapter else ''}")
         if adapter is None:
             completions = [r["template_note"] for r in rows]
         else:
-            gen = Generator(cfg["llm"]["base"], adapter or None, cfg["llm"])
+            gen = Generator(cfg["llm"]["base"], adapter or None, cfg["llm"], max_images=max_images)
             completions = gen.generate(convs)
             del gen
             try:
