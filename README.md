@@ -24,7 +24,7 @@ video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ────────
 | Facts builder | Viterbi decoding, segmentation, per-class reliability from out-of-fold predictions | Time-ordered segments with confidence |
 | Keyframe selection | `notegen_rl/keyframes.py` | 1–2 frames per predicted segment, up to 10 per prompt (256 image tokens each) |
 | Structured-note policy | MedGemma 1.5 4B + LoRA (rank 32), image encoder frozen, GRPO with ms-swift and vLLM (SDPA attention) | Steps with times and confidences, instruments with confidences, closure |
-| Instrument merge | `rewards.merge_repeated_instruments` | Each instrument listed once, at its highest stated confidence |
+| Post-processing | `rewards.read_bare_confidences`, `rewards.merge_repeated_instruments` | A bare number ending an item line read as its confidence; each instrument listed once, at its highest stated confidence |
 | Final note writer | MedGemma-27B-text-it (FP8), reply starting "The patient underwent" | Narrative operative note; indication and postoperative course from optional case details, otherwise surgeon placeholders |
 | Verifier | Deterministic checker | Every step (by name or phrase, e.g. "the sella was opened") and instrument traced to the structured note; identified steps all mentioned; [verify] flags kept; findings, complications and unobservable statements left to the surgeon |
 
@@ -34,13 +34,13 @@ video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ────────
 - [00:24:30-00:26:56] Sellotomy (confidence 0.34; historical reliability 0.52) | instruments: Kerrisons (0.83)
   keyframe 00:26:34: <image> (frame 1 of this segment)
 ...
-Instruments detected in this interval, each once, most confident detection first: Pituitary rongeurs, Kerrisons, Suction
+Instruments detected in this interval, each once (highest detection confidence): Pituitary rongeurs (0.88), Kerrisons (0.83), Suction (0.80)
 ```
 
 Text follows each image tag on its line, so vLLM's Gemma 3 processor finds every image placeholder
 (`notegen_rl/swift_plugin.py` checks the image markers of each rollout request). The last line lists every
-detected instrument once; every step and instrument line of the note ends with `(conf=…)`, the writer's own
-probability that the line is correct.
+detected instrument once with its highest detection confidence; each step and instrument line of the note
+carries `(conf=…)`, the probability that the line is correct.
 
 Frames are the seconds where the MS-TCN is most confident in the segment's step, skipping
 out-of-patient, dark and blurred frames (measured inside the endoscope's circular view). Segments of
@@ -54,7 +54,8 @@ within budget × (1 − share of repeated step lines) × (1 − share of repeate
 
 **Evaluation** (`scripts/06_evaluate.py`): template, untrained MedGemma and GRPO checkpoints, with keyframes
 and with the same prompts without keyframes (`--text-only`, systems `<name>_text`), each scored on its raw
-notes and with repeated instrument lines merged (`<name>_merged`, `eval.merge_repeated_instruments`).
+notes and post-processed (`<name>_merged`, `eval.merge_repeated_instruments`: bare confidences read,
+repeated instrument lines merged).
 
 **Narrative notes** (`scripts/09_final_notes.py`): `[verify]` markers for uncertain steps and instruments are
 placed from the plan before the faithfulness check.

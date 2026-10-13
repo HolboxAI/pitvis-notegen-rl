@@ -152,6 +152,19 @@ def test_merge_repeated_instruments_keeps_each_once_with_highest_conf():
     assert R.merge_repeated_instruments("no note here", ROW["instrument_vocab"]) == "no note here"
 
 
+def test_read_bare_confidences():
+    bare = note(["- Nasal corridor creation [00:00:00-00:05:00] 0.9", "- Tumour excision [00:05:00-00:15:00] (conf=0.8)"],
+                ["- Suction 0.86", "- Bipolar forceps", "- Kerrisons 00:01:00-00:02:00 0.7"])
+    fixed = R.read_bare_confidences(bare)
+    p = R.ParsedNote(fixed)
+    assert [it.conf for it in p.step_items] == [0.9, 0.8]
+    assert [it.conf for it in p.instr_items] == [0.86, None, 0.7]
+    assert "- Suction (conf=0.86)" in fixed and "00:01:00-00:02:00 (conf=0.7)" in fixed
+    assert R.score_all(fixed, ROW)["calibration"] > R.score_all(bare, ROW)["calibration"]
+    clean = note(PERFECT_STEPS, PERFECT_INSTR)
+    assert R.read_bare_confidences(clean) == clean
+
+
 def test_ece():
     assert R.expected_calibration_error([(1.0, 1.0), (0.0, 0.0)]) == 0.0
     assert R.expected_calibration_error([(None, 1.0)]) is None

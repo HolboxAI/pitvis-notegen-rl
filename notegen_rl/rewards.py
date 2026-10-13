@@ -247,6 +247,22 @@ def repeated_instrument_share(p: ParsedNote, row: dict) -> float:
     return repeats / len(names)
 
 
+_BARE_CONF = re.compile(r"^(\s*(?:[-*•]|\d+[.)])\s*\S.*?)\s+(0?\.\d+|1(?:\.0+)?|0)\s*$")
+
+
+def read_bare_confidences(text: str) -> str:
+    """Note whose step and instrument lines that end in a bare number (e.g. "- Kerrisons 0.86") state it
+    as their confidence, "(conf=0.86)". Lines with a confidence already, and everything else, are unchanged."""
+    def fix(section: str) -> str:
+        out = []
+        for line in section.split("\n"):
+            m = _BARE_CONF.match(line) if not _CONF.search(line) else None
+            out.append(f"{m.group(1)} (conf={m.group(2)})" if m else line)
+        return "\n".join(out)
+    return re.sub(r"(<(steps|instruments)(?:\s[^>]*)?>)(.*?)(</\2>)",
+                  lambda m: m.group(1) + fix(m.group(3)) + m.group(4), text or "", flags=re.S | re.I)
+
+
 def merge_repeated_instruments(text: str, instr_vocab) -> str:
     """Note with each instrument listed once: a later line naming an instrument already listed is
     removed and its confidence, if higher, moves to the first line. Other lines are unchanged."""

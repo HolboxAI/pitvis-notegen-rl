@@ -166,7 +166,7 @@ grpo:
 
 eval:
   hedge_threshold: 0.6              # claims below this confidence are rendered "[verify]"
-  merge_repeated_instruments: true  # also score every model as <name>_merged: repeated instrument lines merged
+  merge_repeated_instruments: true  # also score every model as <name>_merged: bare confidences read, repeated instrument lines merged
 
 final_notes:                        # stage 9: structured note -> human-readable operative note
   # Medical instruction-tuned writer; only rephrases the structured note (verified afterwards).
