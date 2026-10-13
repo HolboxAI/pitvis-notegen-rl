@@ -84,6 +84,8 @@ def test_labels_gold_sets_and_prompt_roundtrip():
 
     msgs = build_messages(facts, {"Suction": 0.8}, TAX.surgical_steps, TAX.instr_names, "Pituitary surgery")
     assert msgs[0]["role"] == "system" and "Allowed step names" in msgs[1]["content"]
+    # the format example uses plain names, not bracketed placeholders a model could copy as-is
+    assert "<allowed" not in msgs[1]["content"] and '"Step name"' in msgs[1]["content"]
     # the template baseline must satisfy the reward parser's format
     p = ParsedNote(render_template_note(facts, "Pituitary surgery"))
     assert p.ok and len(p.step_items) == 2 and all(i.conf is not None for i in p.step_items)

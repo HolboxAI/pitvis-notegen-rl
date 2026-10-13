@@ -57,8 +57,11 @@ export VLLM_USE_FLASHINFER_SAMPLER=0
 python -m pytest -q tests
 
 echo "=== [kf 1] keyframe datasets (work_dir/datasets_keyframes, frames in work_dir/keyframes)"
-if [[ ! -f $W/datasets_keyframes/.built ]]; then
-  python scripts/04_build_datasets.py && touch $W/datasets_keyframes/.built
+DS=$(python -c "from notegen_rl.config import load_config, datasets_subdir; print(datasets_subdir(load_config()))")
+echo "keyframe datasets -> $W/$DS"
+aws s3 sync "$RUNS_S3/$DS" "$W/$DS" --only-show-errors || true
+if [[ ! -f $W/$DS/.built ]]; then
+  python scripts/04_build_datasets.py && touch "$W/$DS/.built"
 fi
 
 if [[ -f $W/$OUT/.done ]]; then

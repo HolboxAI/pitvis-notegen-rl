@@ -16,12 +16,13 @@ Components (all in [0, 1]):
   safety       findings and complications left as the surgeon placeholder (not invented)
   concise      length and repetition control: 1 up to a soft token budget, falling linearly to 0
                at the hard budget; scaled by (1 - share of step lines that repeat the previous
-               line's step) and halved when text continues after </note>
+               line's step), by (1 - share of instrument lines repeating an instrument already
+               listed), and halved when text continues after </note>
 
 A complete note scores every component in full. A truncated note (<note> opened but never
 closed) keeps partial credit: grounding, calibration, temporal and safety are computed on the
 lines it did finish and multiplied by `truncation_credit`, and concise is 0. Anything else
-(no <facts_used>/<note>) scores only format.
+(no <note>) scores only format. A <facts_used> block before the note is accepted but not required.
 """
 from __future__ import annotations
 
@@ -88,7 +89,7 @@ class ParsedNote:
         mn = re.search(r"<note>(.*?)</note>", text, re.S | re.I)
         mo = re.search(r"<note>(.*)$", text, re.S | re.I) if not mn else None   # opened, never closed
         self.has_facts_used, self.has_note = bool(mf), bool(mn)
-        self.truncated = bool(mo) and bool(mf) and mf.start() < mo.start()
+        self.truncated = bool(mo)
         self.body = mn.group(1) if mn else (mo.group(1) if self.truncated else "")
         self.trailing_chars = len(text[mn.end():].strip()) if mn else 0
         self.sections, positions = {}, []
@@ -99,8 +100,9 @@ class ParsedNote:
             if m:
                 self.sections[tag] = m.group(1)
                 positions.append(m.start())
-        self.order_ok = positions == sorted(positions) and (not (mf and mn) or mf.start() < mn.start())
-        self.ok = self.has_facts_used and self.has_note and len(self.sections) == len(SECTIONS) and self.order_ok
+        self.order_ok = positions == sorted(positions)
+        # <facts_used> is optional (accepted when present); a complete <note> is what counts
+        self.ok = self.has_note and len(self.sections) == len(SECTIONS) and self.order_ok
         self.step_items = self._items("steps")
         self.instr_items = self._items("instruments")
 
@@ -132,8 +134,8 @@ def match_terms(text: str, vocab) -> list:
 # Components
 # ---------------------------------------------------------------------------
 def format_score(p: ParsedNote) -> float:
-    units = 9
-    score = p.has_facts_used + p.has_note + len(p.sections)
+    units = 8
+    score = p.has_note + len(p.sections)
     items = p.step_items + p.instr_items
     if items:
         score += sum(i.conf is not None for i in items) / len(items)
@@ -231,6 +233,44 @@ def repeated_step_share(p: ParsedNote, row: dict) -> float:
     return repeats / len(names)
 
 
+def repeated_instrument_share(p: ParsedNote, row: dict) -> float:
+    """Share of instrument lines naming an instrument already listed above them."""
+    vocab = _load(row.get("instrument_vocab"), [])
+    names = [(match_terms(it.text, vocab) or [""])[0] for it in p.instr_items]
+    if len(names) < 2:
+        return 0.0
+    seen, repeats = set(), 0
+    for n in names:
+        if n and n in seen:
+            repeats += 1
+        seen.add(n)
+    return repeats / len(names)
+
+
+def merge_repeated_instruments(text: str, instr_vocab) -> str:
+    """Note with each instrument listed once: a later line naming an instrument already listed is
+    removed and its confidence, if higher, moves to the first line. Other lines are unchanged."""
+    vocab = _load(instr_vocab, [])
+    m = re.search(r"(<instruments(?:\s[^>]*)?>)(.*?)(</instruments>)", text or "", re.S | re.I)
+    if not m:
+        return text
+    kept, first = [], {}
+    for line in m.group(2).split("\n"):
+        im = _ITEM.match(line)
+        name = (match_terms(im.group(1), vocab) or [None])[0] if im else None
+        if name is None or name not in first:
+            if name is not None:
+                first[name] = len(kept)
+            kept.append(line)
+            continue
+        i = first[name]
+        old, new = Item(_ITEM.match(kept[i]).group(1)).conf, Item(im.group(1)).conf
+        if new is not None and (old is None or new > old):
+            c = _CONF.search(kept[i])
+            kept[i] = (kept[i][:c.start(1)] + f"{new:.2f}" + kept[i][c.end(1):]) if c else kept[i].rstrip() + f" (conf={new:.2f})"
+    return text[:m.start(2)] + "\n".join(kept) + text[m.end(2):]
+
+
 def concise(text: str, p: ParsedNote, row: dict) -> float:
     if not p.ok:
         return 0.0
@@ -238,7 +278,7 @@ def concise(text: str, p: ParsedNote, row: dict) -> float:
     soft, hard = _param(row, "length_soft_tokens"), _param(row, "length_hard_tokens")
     length = 1.0 if tokens <= soft else max(0.0, 1.0 - (tokens - soft) / max(1.0, hard - soft))
     tail = 0.5 if p.trailing_chars > TRAILING_CHARS_ALLOWED else 1.0
-    return length * (1.0 - repeated_step_share(p, row)) * tail
+    return length * (1.0 - repeated_step_share(p, row)) * (1.0 - repeated_instrument_share(p, row)) * tail
 
 
 def score_all(text: str, row: dict) -> dict:

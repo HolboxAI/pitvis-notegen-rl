@@ -6,6 +6,9 @@ Systems compared (each gets eval/<name>/completions.jsonl + metrics.json):
   grpo      newest GRPO checkpoint under work_dir/grpo
   extra:    --adapter name=/path/to/checkpoint (repeatable)
 
+With eval.merge_repeated_instruments, every model system is also scored as <name>_merged: the same
+notes with repeated instrument lines merged (rewards.merge_repeated_instruments).
+
 With keyframes.enabled the model systems see the keyframe prompts. --text-only evaluates the
 same systems on the same prompts without keyframes (results named <system>_text), which
 measures what the images add.
@@ -126,6 +129,11 @@ def main():
             except ImportError:
                 pass
         results[name] = evaluate(name, completions, rows, w_by_func, out_root, cfg["eval"]["hedge_threshold"])
+        if adapter is not None and cfg["eval"].get("merge_repeated_instruments"):
+            # the same notes with each instrument listed once (post-processing), next to the raw scores
+            merged = [R.merge_repeated_instruments(c, r["instrument_vocab"]) for c, r in zip(completions, rows)]
+            results[f"{name}_merged"] = evaluate(f"{name}_merged", merged, rows, w_by_func, out_root,
+                                                 cfg["eval"]["hedge_threshold"])
 
     cols = ("weighted_total", "parsed_ok", "truncated", "grounding", "step_f1", "instr_f1",
             "calibration", "ece", "temporal", "safety", "concise")

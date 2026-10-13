@@ -37,6 +37,8 @@ def common(cfg, sub, rank, alpha):
     cmd = ["swift", sub, "--model", llm["base"]]
     if llm.get("model_type"):
         cmd += ["--model_type", llm["model_type"]]
+    if llm.get("attn_impl"):
+        cmd += ["--attn_impl", llm["attn_impl"]]
     if llm.get("response_prefix"):
         cmd += ["--response_prefix", llm["response_prefix"]]
     cmd += [tuner_flag(sub), "lora", "--lora_rank", str(rank), "--lora_alpha", str(alpha),

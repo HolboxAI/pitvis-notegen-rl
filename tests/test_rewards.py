@@ -127,6 +127,31 @@ def test_concise_penalises_length_repeats_and_trailing_text():
     assert R.score_all(base + "\n<facts>The video shows the surgeon performing an</facts>", ROW)["concise"] == 0.5
 
 
+def test_concise_penalises_repeated_instruments():
+    base = note(PERFECT_STEPS, PERFECT_INSTR + ["- Bipolar forceps (conf=0.6)"])
+    repeated = note(PERFECT_STEPS, PERFECT_INSTR + ["- Bipolar forceps (conf=0.6)", "- Suction (conf=0.7)",
+                                                     "- Suction (conf=0.5)"])
+    p = R.ParsedNote(repeated)
+    assert R.repeated_instrument_share(p, ROW) == 0.5
+    assert R.repeated_instrument_share(R.ParsedNote(base), ROW) == 0.0
+    assert R.score_all(repeated, ROW)["concise"] < R.score_all(base, ROW)["concise"]
+
+
+def test_merge_repeated_instruments_keeps_each_once_with_highest_conf():
+    repeated = note(PERFECT_STEPS, ["- Suction (conf=0.6)", "- Bipolar forceps (conf=0.5)", "- Suction (conf=0.9)",
+                                    "- Bipolar forceps 00:01:00-00:02:00 (conf=0.4)", "- Suction"])
+    merged = R.merge_repeated_instruments(repeated, ROW["instrument_vocab"])
+    p = R.ParsedNote(merged)
+    assert [it.text for it in p.instr_items] == ["Suction (conf=0.90)", "Bipolar forceps (conf=0.5)"]
+    assert R.repeated_instrument_share(p, ROW) == 0.0 and p.ok
+    assert merged.replace(R.ParsedNote(merged).sections["instruments"], "") == \
+        repeated.replace(R.ParsedNote(repeated).sections["instruments"], "")      # nothing else changes
+    assert R.score_all(merged, ROW)["concise"] > R.score_all(repeated, ROW)["concise"]
+    clean = note(PERFECT_STEPS, PERFECT_INSTR)
+    assert R.merge_repeated_instruments(clean, ROW["instrument_vocab"]) == clean
+    assert R.merge_repeated_instruments("no note here", ROW["instrument_vocab"]) == "no note here"
+
+
 def test_ece():
     assert R.expected_calibration_error([(1.0, 1.0), (0.0, 0.0)]) == 0.0
     assert R.expected_calibration_error([(None, 1.0)]) is None
@@ -148,3 +173,12 @@ def test_medgemma_thought_block_is_not_part_of_the_note():
     thought = "<unused94>thought\nlist rules: <note> ... nothing after </note>\n<unused95>"
     assert ParsedNote(thought + note).ok and ParsedNote(note).ok
     assert [i.text for i in ParsedNote(thought + note).step_items] == [i.text for i in ParsedNote(note).step_items]
+
+
+def test_summary_block_is_optional():
+    with_summary = note(PERFECT_STEPS, PERFECT_INSTR)
+    without = with_summary.split("</facts_used>", 1)[1]
+    a, b = R.score_all(with_summary, ROW), R.score_all(without, ROW)
+    assert R.ParsedNote(without).ok and a["format"] == b["format"] == 1.0 and a["grounding"] == b["grounding"]
+    looped = "<facts_used>" + "The system detected Sellotomy. " * 200
+    assert not R.ParsedNote(looped).ok and R.score_all(looped, ROW)["grounding"] == 0
