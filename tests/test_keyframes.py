@@ -98,3 +98,21 @@ def test_prompt_images_line_up_with_tags(tmp_path):
     assert conv[0] == msgs[0]
     plain = to_conversation(row, text_only=True)
     assert IMAGE_TAG not in plain[1]["content"] and "Keyframes" not in plain[0]["content"]
+
+
+def test_no_newline_directly_after_an_image_tag():
+    facts = VideoFacts("1", "predicted", [Segment("Tumour excision", 10, 40, 0.6)])
+    kfs = [Keyframe(0, 15, "a.jpg"), Keyframe(0, 30, "b.jpg", primary=False)]
+    user = build_messages(facts, {}, TAX.surgical_steps, TAX.instr_names, "proc", keyframes=kfs)[1]["content"]
+    assert user.count(IMAGE_TAG) == 2 and IMAGE_TAG + "\n" not in user
+    assert "(frame 2 of this segment)" in user
+
+
+def test_perception_lists_each_detected_instrument_once():
+    facts = VideoFacts("1", "predicted", [
+        Segment("Nasal corridor creation", 0, 10, 0.9, {"Suction": 0.6, "Kerrisons": 0.8}),
+        Segment("Tumour excision", 10, 40, 0.6, {"Suction": 0.9})])
+    user = build_messages(facts, {}, TAX.surgical_steps, TAX.instr_names, "proc")[1]["content"]
+    summary = [ln for ln in user.splitlines() if ln.startswith("Instruments detected in this interval")]
+    assert summary == ["Instruments detected in this interval, each once, most confident detection first: "
+                       "Suction, Kerrisons"]

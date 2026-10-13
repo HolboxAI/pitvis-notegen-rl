@@ -72,11 +72,11 @@ keyframes:
   # Facts + keyframes -> MedGemma: frames from inside every predicted segment are shown to the
   # note writer under that segment's line (notegen_rl/keyframes.py). Uses data.frames_subdir.
   # Datasets go to work_dir/datasets_keyframes/ (work_dir/datasets/ when disabled = text-only).
-  enabled: true
+  enabled: false
   frames_per_segment: 1
   long_segment_s: 300               # segments at least this long get frames_per_long_segment frames,
   frames_per_long_segment: 2        # one from each equal part of the segment
-  max_images_per_prompt: 16         # MedGemma: 256 tokens per image
+  max_images_per_prompt: 10         # MedGemma: 256 tokens per image; keeps prompt + completion in grpo.max_length
   candidates: 8                     # most step-confident seconds checked per frame slot
   out_of_patient_max: 0.5           # skip seconds whose non-surgical step probability reaches this
   min_brightness: 25                # skip dark frames (mean intensity 0-255 of the centre square)
@@ -96,6 +96,7 @@ dataset:
   length_hard_tokens: 900           # concise reward reaches 0 here
   chars_per_token: 3.8
   truncation_credit: 0.5            # share of grounding/calibration/temporal/safety kept by a truncated note
+  subdir: datasets_medgemma5        # datasets folder under work_dir (null: datasets, or datasets_keyframes with keyframes)
 
 llm:
   # Structured-note policy: MedGemma 1.5 4B (Gemma 3, medical). Prompts carry the perception facts and,
@@ -104,14 +105,17 @@ llm:
   base: google/medgemma-1.5-4b-it   # EC2 jobs use the copy in S3 (operative-notes/models/) when present
   model_type: gemma3_vision         # ms-swift model_type (null = inferred from llm.base by ms-swift)
   cold_start_adapter: null          # optional LoRA dir to start from (e.g. a synced copy of A_s189)
-  max_new_tokens: 1536
+  max_new_tokens: 2500              # MedGemma's tokenizer splits digits: one time range is ~19 tokens
   stop: ["</note>"]                 # generation ends at the closing note tag
   # Reply prefix: an empty, closed MedGemma thought block, so the note is written directly
   # (training: ms-swift --response_prefix; evaluation / inference: continued assistant turn).
   response_prefix: "<unused94>thought\n<unused95>"
+  # Attention implementation for training (ms-swift --attn_impl; null = ms-swift's default, eager for
+  # Gemma 3). sdpa keeps the image encoder's attention over keyframes within GPU memory.
+  attn_impl: sdpa
   suppress_tokens: ["<unused94>"]   # never open another reasoning block (evaluation, inference, final notes)
-  repetition_penalty: 1.0           # >1 discourages repeated tokens (evaluation, inference, final notes)
-  max_model_len: 10240              # keyframe prompts (up to 16 x 256 image tokens) + completion
+  repetition_penalty: 1.05          # >1 discourages repeated tokens (evaluation, inference, final notes)
+  max_model_len: 12288              # keyframe prompts (up to 10 x 256 image tokens) + 2,500-token completion
   gpu_memory_utilization: 0.85      # eval / inference only
   tensor_parallel_size: 1
 
@@ -135,12 +139,12 @@ grpo:
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
   temperature: 1.0
-  repetition_penalty: 1.0           # >1 discourages repeated tokens in the sampled candidate notes
+  repetition_penalty: 1.05          # >1 discourages repeated tokens in the sampled candidate notes
   beta: 0.03                        # KL penalty towards the base model
   max_grad_norm: 0.5
   loss_type: dr_grpo                # length-unbiased GRPO loss (ms-swift loss_type)
   max_length: 8192                  # prompt tokens incl. keyframes (vLLM context = max_length + max_completion_length)
-  max_completion_length: 900
+  max_completion_length: 1500       # room for a full procedure (25 step lines of ~40 tokens)
   use_vllm: true
   vllm_mode: colocate
   vllm_gpu_memory_utilization: 0.5
@@ -154,13 +158,15 @@ grpo:
     min_step: 30                    # no checks before this step (baseline is taken from steps 1-10)
     max_kl: 0.5
     max_grad_norm: 10.0
-    max_clipped_ratio: 0.1
-    max_length_ratio: 1.5           # mean completion length vs the first 10 steps
+    max_clipped_ratio: 0.5          # absolute ceiling on the share of completions cut off at the budget
+    max_clipped_increase: 0.15      # rise of that share above the first `window` steps
+    max_length_ratio: 2.0           # mean completion length vs the first 10 steps
     min_reward_ratio: 0.6           # mean reward vs the best window so far
   select_every: 50                  # evaluate every Nth-step checkpoint on validation videos
 
 eval:
   hedge_threshold: 0.6              # claims below this confidence are rendered "[verify]"
+  merge_repeated_instruments: true  # also score every model as <name>_merged: repeated instrument lines merged
 
 final_notes:                        # stage 9: structured note -> human-readable operative note
   # Medical instruction-tuned writer; only rephrases the structured note (verified afterwards).

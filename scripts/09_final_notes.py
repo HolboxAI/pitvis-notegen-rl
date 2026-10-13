@@ -70,6 +70,7 @@ def main():
             if not todo:
                 break
             outs = [start + o for o in gen.generate([F.messages(plans[i], procedure, case_of[i]) for i in todo])]
+            outs = [F.set_flags(o, plans[i]) for i, o in zip(todo, outs)]   # markers from the plan, not the writer
             still = []
             for i, text in zip(todo, outs):
                 r = rows[(comps[i]["video_id"], comps[i]["window"])]

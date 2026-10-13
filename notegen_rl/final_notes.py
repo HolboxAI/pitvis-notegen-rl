@@ -7,7 +7,9 @@
               the plan into a dictated-style narrative ("The patient underwent ... The operation began
               with ..."), with one worked example (in-context learning). Indication and postoperative
               course come only from optional case details, otherwise they stay surgeon placeholders.
-3. verify()   deterministic faithfulness check of the narrative against the plan: every step it
+3. set_flags() deterministic [verify] markers: the writer's markers are removed and one is placed after
+              the first mention of every uncertain step (end of its clause) and instrument (after its name).
+4. verify()   deterministic faithfulness check of the narrative against the plan: every step it
               mentions (by name or by a standard phrase, e.g. "the sella was opened") and every
               instrument must come from the structured note, every identified step must be mentioned,
               uncertain steps keep their [verify] marker, findings/complications stay with the surgeon,
@@ -74,6 +76,13 @@ STEP_PHRASES = {
     "Dural sealant": r"(?:dural )?sealant",
     "Nasal packing": r"(?:nasal )?pack(?:ing|ed)",
 }
+# plural forms ("repeated anterior sphenoidotomies", "septum displacements", "sinus clearings")
+for _k, _a, _b in (("Anterior sphenoidotomy", "sphenoidotomy", "sphenoidotom(?:y|ies)"),
+                   ("Sellotomy", "sellotomy", "sellotom(?:y|ies)"), ("Durotomy", "durotomy", "durotom(?:y|ies)"),
+                   ("Septum displacement", "septal displacement", "septal displacements?"),
+                   ("Sphenoid sinus clearance", "sphenoid sinus clearance", "sphenoid sinus clear(?:ance|ings?)")):
+    STEP_PHRASES[_k] = STEP_PHRASES[_k].replace(_a, _b)
+STEP_PHRASES["Septum displacement"] += r"|septum displacements?"
 # "was opened" also matches "was then opened", "was subsequently opened", ...
 STEP_PHRASES = {k: v.replace("was ", r"was (?:\w+ )?") for k, v in STEP_PHRASES.items()}
 # Statements the video cannot support; allowed only inside text given as a case detail.
@@ -208,6 +217,40 @@ def mentioned_steps(text: str, step_vocab: list) -> set:
         if step in step_vocab and re.search(pat, text, re.I):
             found.add(step)
     return found
+
+
+_FLAG = re.compile(r"[ \t]*[\[(]verify[\])]", re.I)
+_CLAUSE_END = re.compile(r"[,;:\n]|[.!?](?=\s|$)")
+
+
+def _flag_pos(narrative: str, name: str, is_step: bool) -> int | None:
+    """Where the [verify] marker of name goes: end of the clause of its first mention (steps) or
+    directly after it (instruments); None when the narrative does not mention it."""
+    if is_step:
+        pat = re.escape(name) + (f"|{STEP_PHRASES[name]}" if name in STEP_PHRASES else "")
+    else:
+        pat = r"(?<![a-z0-9])" + re.escape(name) + r"(?:e?s)?(?![a-z0-9])"
+    m = re.search(pat, narrative, re.I)
+    if not m:
+        return None
+    if not is_step:
+        return m.end()
+    end = _CLAUSE_END.search(narrative, m.end())
+    return end.start() if end else len(narrative.rstrip())
+
+
+def set_flags(prose: str, pl: dict) -> str:
+    """Narrative with the plan's [verify] markers: the writer's own markers are removed, then one is
+    placed after the first mention of every uncertain step and instrument."""
+    text = clean(prose)
+    narrative, sep, tail = text.partition("\nFindings:")
+    narrative = _FLAG.sub("", narrative)
+    flagged = [(e["step"], True) for e in pl["steps"] if e["verify"]]
+    flagged += [(i["name"], False) for i in pl["instruments"] if i["verify"]]
+    marks = {pos for pos in (_flag_pos(narrative, n, is_step) for n, is_step in flagged) if pos is not None}
+    for pos in sorted(marks, reverse=True):
+        narrative = narrative[:pos].rstrip() + " [verify]" + narrative[pos:]
+    return narrative + sep + tail
 
 
 def _sentences(text: str) -> list:

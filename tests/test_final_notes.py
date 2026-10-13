@@ -79,3 +79,27 @@ def test_verify_keeps_verify_markers_and_strips_reasoning():
 def test_phrases_allow_an_adverb():
     assert {"Sellotomy", "Durotomy", "Tumour excision"} <= F.mentioned_steps(
         "The sella was then opened, the dura was subsequently opened and the tumour was carefully excised.", STEPS)
+
+
+def test_plural_step_mentions_count():
+    steps = STEPS + ["Septum displacement"]
+    found = F.mentioned_steps("repeated anterior sphenoidotomies, repeated septum displacements and repeated "
+                              "sphenoid sinus clearings; repeated durotomies", steps)
+    assert {"Anterior sphenoidotomy", "Septum displacement", "Sphenoid sinus clearance", "Durotomy"} <= found
+    assert "Durotomy" not in F.mentioned_steps("a durotromy was performed", steps)   # misspelt names do not count
+
+
+def test_set_flags_places_markers_from_the_plan():
+    note = NOTE.replace("Tumour excision [00:10:00-00:30:00] (conf=0.92)", "Tumour excision [00:10:00-00:30:00] (conf=0.42)")
+    pl = F.plan(note, STEPS, INSTR)
+    good = F.template_prose(pl, "p")
+    # the writer dropped one marker and invented another; the plan decides
+    written = good.replace("excised [verify]", "excised").replace("suction", "suction [verify]")
+    fixed = F.set_flags(written, pl)
+    assert "the tumour was excised [verify]" in fixed and "suction [verify]" not in fixed
+    assert "tissue glue [verify]" in fixed and fixed.count("[verify]") == 2
+    assert F.verify(fixed, pl, STEPS, INSTR) == []
+    assert F.set_flags(fixed, pl) == fixed                      # idempotent
+    clause = F.set_flags(f"The patient underwent p for {F.INDICATION_PH}. The tumour was carefully removed, "
+                         f"and the cavity was inspected. {F.POSTOP_PH}", pl)
+    assert "The tumour was carefully removed [verify], and" in clause

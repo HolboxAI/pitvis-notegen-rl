@@ -14,8 +14,8 @@
 set -euo pipefail
 PROJ_S3=${PROJ_S3:-s3://stanford-segment-clips/debjyoti/operative-notes/pitvis-notegen-rl-medgemma}
 RUNS_S3=s3://stanford-segment-clips/debjyoti/operative-notes/runs/pitvis-notegen
-OUT=${OUT:-grpo_medgemma}
-EVAL=${EVAL:-eval_medgemma}
+OUT=${OUT:-grpo_medgemma_v3}
+EVAL=${EVAL:-eval_medgemma_v3}
 # MedGemma 1.5 4B: the copy in S3 (operative-notes/models/) is used when present, otherwise the model
 # is downloaded from Hugging Face (gated: the token is read from S3, never stored in the repository)
 MODEL_S3=s3://stanford-segment-clips/debjyoti/operative-notes/models/medgemma-1.5-4b-it
@@ -49,9 +49,13 @@ python -m pip install -q "qwen-vl-utils>=0.0.14"
 export VLLM_USE_FLASHINFER_SAMPLER=0
 python -m pytest -q tests
 
-echo "=== [v2 0] datasets (validation split, length-controlled prompts)"
-if [[ ! -f $W/datasets/.v2 ]]; then
-  python scripts/04_build_datasets.py && touch $W/datasets/.v2
+DS=$(python -c "from notegen_rl.config import load_config, datasets_subdir; print(datasets_subdir(load_config()))")
+echo "=== [v2 0] datasets -> $W/$DS (validation split, length-controlled prompts)"
+aws s3 sync "$RUNS_S3/$DS" "$W/$DS" --only-show-errors || true
+if [[ ! -f $W/$DS/grpo_train.jsonl ]]; then
+  for f in taxonomy.json split.json; do [[ -f $W/$f ]] || aws s3 cp "$RUNS_S3/$f" "$W/$f" --only-show-errors; done
+  for d in predictions facts; do aws s3 sync "$RUNS_S3/$d" "$W/$d" --only-show-errors || true; done
+  python scripts/04_build_datasets.py
 fi
 
 if [[ -f $W/$OUT/.done ]]; then
