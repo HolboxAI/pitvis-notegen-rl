@@ -4,11 +4,14 @@
 
 Every `interval` seconds it averages the last `window` logged steps and stops the training process
 group if any limit in config.yaml (grpo.watchdog) is exceeded:
-  mean KL, mean gradient norm, share of clipped completions, mean completion length relative to the
-  first `window` steps, or mean reward relative to the best window so far.
+  mean KL, mean gradient norm, share of clipped completions (absolute ceiling, and rise above the
+  first `window` steps), mean completion length relative to the first `window` steps, or mean reward
+  relative to the best window so far.
 On a stop it writes <grpo-dir>/.watchdog_stop (JSON: step, reason, last_healthy_checkpoint), where
 last_healthy_checkpoint is the newest full checkpoint saved before the window that tripped.
 """
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -60,19 +63,23 @@ def check(rows: list, w: dict) -> str | None:
     if len(rows) < max(n * 2, 1) or rows[-1]["step"] < int(w["min_step"]):
         return None
     base_len = mean(rows[:n], "length")
+    base_clip = mean(rows[:n], "clipped")
     recent = rows[-n:]
     best = max(mean(rows[i:i + n], "reward") or 0.0 for i in range(0, len(rows) - n + 1))
     tests = [
         ("mean KL", mean(recent, "kl"), w["max_kl"], ">"),
         ("mean gradient norm", mean(recent, "grad_norm"), w["max_grad_norm"], ">"),
         ("clipped completions", mean(recent, "clipped"), w["max_clipped_ratio"], ">"),
+        ("clipped completions vs start",
+         (mean(recent, "clipped") or 0) - base_clip if base_clip is not None else None,
+         w.get("max_clipped_increase"), ">"),
         ("completion length vs start", (mean(recent, "length") or 0) / base_len if base_len else None,
          w["max_length_ratio"], ">"),
         ("reward vs best window", (mean(recent, "reward") or 0) / best if best > 0 else None,
          w["min_reward_ratio"], "<"),
     ]
     for name, value, limit, op in tests:
-        if value is not None and ((op == ">" and value > limit) or (op == "<" and value < limit)):
+        if value is not None and limit is not None and ((op == ">" and value > limit) or (op == "<" and value < limit)):
             return f"{name} {value:.3f} {op} {limit} over steps {recent[0]['step']}-{recent[-1]['step']}"
     return None
 

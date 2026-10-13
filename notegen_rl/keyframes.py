@@ -133,7 +133,7 @@ def select_keyframes(facts, times, step_probs, tax, frame_path, kcfg) -> list:
             got = _pick(part, step_probs[part, cls], times, frame_path, kcfg)
             if got:
                 kfs.append(Keyframe(si, got[0], got[1], primary=not any(x.segment == si for x in kfs)))
-    return cap_keyframes(kfs, facts, int(kcfg.get("max_images_per_prompt", 16)))
+    return cap_keyframes(kfs, facts, int(kcfg.get("max_images_per_prompt", 10)))
 
 
 def cap_keyframes(kfs: list, facts, max_images: int) -> list:
