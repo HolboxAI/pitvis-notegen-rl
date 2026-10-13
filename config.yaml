@@ -96,7 +96,7 @@ dataset:
   length_hard_tokens: 900           # concise reward reaches 0 here
   chars_per_token: 3.8
   truncation_credit: 0.5            # share of grounding/calibration/temporal/safety kept by a truncated note
-  subdir: datasets_medgemma5        # datasets folder under work_dir (null: datasets, or datasets_keyframes with keyframes)
+  subdir: datasets_medgemma4        # datasets folder under work_dir (null: datasets, or datasets_keyframes with keyframes)
 
 llm:
   # Structured-note policy: MedGemma 1.5 4B (Gemma 3, medical). Prompts carry the perception facts and,
@@ -166,7 +166,7 @@ grpo:
 
 eval:
   hedge_threshold: 0.6              # claims below this confidence are rendered "[verify]"
-  merge_repeated_instruments: true  # also score every model as <name>_merged: repeated instrument lines merged
+  merge_repeated_instruments: true  # also score every model as <name>_merged: bare confidences read, repeated instrument lines merged
 
 final_notes:                        # stage 9: structured note -> human-readable operative note
   # Medical instruction-tuned writer; only rephrases the structured note (verified afterwards).

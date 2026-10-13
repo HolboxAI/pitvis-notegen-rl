@@ -114,5 +114,5 @@ def test_perception_lists_each_detected_instrument_once():
         Segment("Tumour excision", 10, 40, 0.6, {"Suction": 0.9})])
     user = build_messages(facts, {}, TAX.surgical_steps, TAX.instr_names, "proc")[1]["content"]
     summary = [ln for ln in user.splitlines() if ln.startswith("Instruments detected in this interval")]
-    assert summary == ["Instruments detected in this interval, each once, most confident detection first: "
-                       "Suction, Kerrisons"]
+    assert summary == ["Instruments detected in this interval, each once (highest detection confidence): "
+                       "Suction (0.90), Kerrisons (0.80)"]

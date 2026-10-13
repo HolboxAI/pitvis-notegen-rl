@@ -22,21 +22,21 @@ video (1 fps) ─► Endo-FM ─► MS-TCN ─► facts ─► MedGemma 1.5 4B +
 | Temporal recogniser | MS-TCN, 2 stages × 10 dilated layers, step softmax + instrument sigmoid | Per-second step and instrument probabilities |
 | Facts builder | Viterbi decoding, segmentation, per-class reliability from out-of-fold predictions | Time-ordered segments with confidence and detected instruments |
 | Structured-note policy | MedGemma 1.5 4B + LoRA (rank 32), text-only prompts, GRPO with ms-swift and vLLM (SDPA attention) | Steps with times and confidences, instruments with confidences, closure |
-| Instrument merge | `rewards.merge_repeated_instruments` | Each instrument listed once, at its highest stated confidence |
+| Post-processing | `rewards.read_bare_confidences`, `rewards.merge_repeated_instruments` | A bare number ending an item line read as its confidence; each instrument listed once, at its highest stated confidence |
 | Final note writer | MedGemma (`final_notes.model`), reply starting "The patient underwent" | Narrative operative note; indication and postoperative course from optional case details, otherwise surgeon placeholders |
 | Verifier | Deterministic checker (`notegen_rl/final_notes.py`) | Every step (by name or phrase, e.g. "the sella was opened") and instrument traced to the structured note; identified steps all mentioned; findings, complications and unobservable statements left to the surgeon |
 
 **Prompt.** The note writer reads one line per detected segment, followed by one line listing every
-detected instrument once (most confident detection first):
+detected instrument once with its highest detection confidence:
 
 ```
 - [00:24:30-00:26:56] Sellotomy (confidence 0.34; historical reliability 0.52) | instruments: Kerrisons (0.83)
 - [00:26:56-00:41:10] Tumour excision (confidence 0.71; historical reliability 0.75) | instruments: Pituitary rongeurs (0.88), Suction (0.80)
-Instruments detected in this interval, each once, most confident detection first: Pituitary rongeurs, Kerrisons, Suction
+Instruments detected in this interval, each once (highest detection confidence): Pituitary rongeurs (0.88), Kerrisons (0.83), Suction (0.80)
 ```
 
-The note lists each step occurrence and each instrument once, and every step and instrument line ends
-with `(conf=…)`, the writer's own probability that the line is correct.
+The note lists each step occurrence and each instrument once; each step and instrument line carries
+`(conf=…)`, the probability that the line is correct.
 
 **Rewards** (`notegen_rl/rewards.py`), computed against the PitVis labels (maximum 2.8):
 
@@ -55,7 +55,8 @@ with `(conf=…)`, the writer's own probability that the line is correct.
 training resumes from the newest one), a watchdog on KL, gradient norm, completion length, cut-off
 notes and reward, and checkpoint selection every 50 steps on the validation videos (5, 12, 18).
 Held-out evaluation on videos 21–25 scores the template, untrained MedGemma and the selected
-checkpoint, each on its raw notes and with repeated instrument lines merged (`<system>_merged`).
+checkpoint, each on its raw notes and post-processed (`<system>_merged`: bare confidences read, repeated
+instrument lines merged).
 
 **Narrative notes** (`scripts/09_final_notes.py`): a deterministic plan groups the structured note into
 surgical phases; the writer turns it into prose; `[verify]` markers for uncertain steps and instruments
@@ -70,7 +71,7 @@ bash run_pipeline.sh                                # stages 0-6
 python scripts/04_build_datasets.py                 # text-only prompts -> work_dir/<dataset.subdir>/
 python scripts/05_train.py --stage grpo --resume    # GRPO (resumes from the newest full checkpoint)
 python scripts/10_select_checkpoint.py --grpo-dir grpo_medgemma_v3
-python scripts/06_evaluate.py                       # template, base and GRPO scored with the rewards (raw and merged)
+python scripts/06_evaluate.py                       # template, base and GRPO scored with the rewards (raw and post-processed)
 python scripts/07_generate_note.py --video case.mp4 # note for a new video
 python scripts/09_final_notes.py --completions <eval>/grpo/completions.jsonl [--case-details cases.json]
 ```

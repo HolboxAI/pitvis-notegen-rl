@@ -7,7 +7,8 @@ Systems compared (each gets eval/<name>/completions.jsonl + metrics.json):
   extra:    --adapter name=/path/to/checkpoint (repeatable)
 
 With eval.merge_repeated_instruments, every model system is also scored as <name>_merged: the same
-notes with repeated instrument lines merged (rewards.merge_repeated_instruments).
+notes with bare confidences read (rewards.read_bare_confidences) and repeated instrument lines merged
+(rewards.merge_repeated_instruments).
 
 With keyframes.enabled the model systems see the keyframe prompts. --text-only evaluates the
 same systems on the same prompts without keyframes (results named <system>_text), which
@@ -130,8 +131,9 @@ def main():
                 pass
         results[name] = evaluate(name, completions, rows, w_by_func, out_root, cfg["eval"]["hedge_threshold"])
         if adapter is not None and cfg["eval"].get("merge_repeated_instruments"):
-            # the same notes with each instrument listed once (post-processing), next to the raw scores
-            merged = [R.merge_repeated_instruments(c, r["instrument_vocab"]) for c, r in zip(completions, rows)]
+            # the same notes post-processed (bare confidences read, each instrument listed once), next to the raw scores
+            merged = [R.merge_repeated_instruments(R.read_bare_confidences(c), r["instrument_vocab"])
+                      for c, r in zip(completions, rows)]
             results[f"{name}_merged"] = evaluate(f"{name}_merged", merged, rows, w_by_func, out_root,
                                                  cfg["eval"]["hedge_threshold"])
 

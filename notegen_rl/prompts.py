@@ -67,19 +67,18 @@ def render_perception(facts, reliability: dict, keyframes: list | None = None) -
                   for j, k in enumerate(by_seg.get(si, []), 1)]
     if not lines:
         return "(the system detected no surgical steps in this interval)"
-    lines.append("Instruments detected in this interval, each once, most confident detection first: "
+    lines.append("Instruments detected in this interval, each once (highest detection confidence): "
                  + (render_instrument_summary(facts) or "none detected"))
     return "\n".join(lines)
 
 
 def render_instrument_summary(facts) -> str:
-    """Every instrument detected in any segment, once, ordered by its highest detection confidence.
-    Names only: the note's confidences are the writer's own, not copies of detection confidences."""
+    """Every instrument detected in any segment, once, with its highest detection confidence."""
     best = {}
     for seg in facts.segments:
         for n, c in seg.instruments.items():
             best[n] = max(best.get(n, 0.0), c)
-    return ", ".join(n for n, _ in sorted(best.items(), key=lambda x: -x[1]))
+    return ", ".join(f"{n} ({c:.2f})" for n, c in sorted(best.items(), key=lambda x: -x[1]))
 
 
 def render_instrument_reliability(instr_names: list, reliability: dict) -> str:
@@ -121,8 +120,7 @@ Write the note in EXACTLY this format, sections in this order, nothing outside t
 </note>
 
 Rules: one step or instrument per line; replace "Step name" and "Instrument name" with the allowed names verbatim; omit anything you
-believe did not happen; end every step and instrument line with (conf=0.00-1.00), your own probability
-that the line is correct. Each line holds only the name,
+believe did not happen; conf is the probability the line is correct. Each line holds only the name,
 the time range for steps, and conf -- do not copy the detection confidence or historical reliability
 into the note. Keep the note concise: list each step occurrence once, give one line spanning a step
 that is only briefly interrupted or split into fragments, list each instrument once (the summary line of detected instruments has each one once), never repeat a
