@@ -24,7 +24,14 @@ from notegen_rl.llm import find_latest_checkpoint  # noqa: E402
 
 
 def tuner_flag(sub: str) -> str:
-    """ms-swift renamed --train_type to --tuner_type in newer releases; ask the installed one."""
+    """ms-swift renamed --train_type to --tuner_type in newer releases (4.x, every command); ask the
+    installed one: its version, then its help text."""
+    try:
+        from importlib.metadata import version
+        if int(version("ms-swift").split(".")[0]) >= 4:
+            return "--tuner_type"
+    except Exception:  # noqa: BLE001 -- not installed as a distribution: fall back to the help text
+        pass
     try:
         out = subprocess.run(["swift", sub, "--help"], capture_output=True, text=True, timeout=900)
         return "--tuner_type" if "--tuner_type" in (out.stdout + out.stderr) else "--train_type"
