@@ -59,3 +59,12 @@ def test_checkpoints_sorted_by_step_and_resumability(tmp_path):
     assert [Path(c).name for c in list_checkpoints(tmp_path)] == ["checkpoint-25", "checkpoint-50", "checkpoint-100"]
     assert Path(find_latest_checkpoint(tmp_path, resumable=True)).name == "checkpoint-50"
     assert Path(find_latest_checkpoint(tmp_path)).name == "checkpoint-100"
+
+
+def test_clipped_share_is_judged_against_the_start():
+    lim = dict(LIMITS, max_clipped_ratio=0.5, max_clipped_increase=0.15)
+    steady = [{"step": i, "reward": 1.6, "kl": 0.002, "grad_norm": 0.3, "clipped": 0.3, "length": 700.0}
+              for i in range(1, 41)]
+    assert WD.check(steady, lim) is None                       # high from the start, not rising
+    rising = [dict(r, clipped=0.05 if r["step"] <= 20 else 0.3) for r in steady]
+    assert "clipped completions vs start" in WD.check(rising, lim)

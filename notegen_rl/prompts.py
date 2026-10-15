@@ -2,7 +2,6 @@
 
 Output format (parsed by rewards.py -- change both together):
 
-<facts_used>...</facts_used>
 <note>
 <procedure>...</procedure>
 <findings>[SURGEON TO COMPLETE]</findings>
@@ -19,6 +18,7 @@ Output format (parsed by rewards.py -- change both together):
 from __future__ import annotations
 
 PLACEHOLDER = "[SURGEON TO COMPLETE]"
+IMAGE_TAG = "<image>"            # one per keyframe, in order (ms-swift multimodal dataset format)
 SECTIONS = ["procedure", "findings", "steps", "instruments", "complications", "closure"]
 CLOSURE_KEYWORDS = ("graft", "seal", "packing", "closure", "reconstruction")
 
@@ -32,21 +32,53 @@ SYSTEM_PROMPT = (
     "reviews and signs."
 )
 
+KEYFRAME_SYSTEM = (
+    " Keyframes from the endoscopic video are shown under the detections they were taken from. "
+    "Use them to check each detection: keep what the frames support, and lower the confidence of, "
+    "or omit, detections the frames contradict. The frames do not replace the timeline -- times "
+    "and order come from the detections. Do not describe anatomy or pathology from the frames."
+)
+
+KEYFRAME_USER = (
+    "Under each detection, \"keyframe HH:MM:SS\" lines show frames taken from inside that "
+    "detected segment at that time."
+)
+
 
 def fmt_ts(seconds: float) -> str:
     s = int(round(seconds))
     return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
 
-def render_perception(facts, reliability: dict) -> str:
+def render_perception(facts, reliability: dict, keyframes: list | None = None) -> str:
+    by_seg = {}
+    for k in sorted(keyframes or [], key=lambda k: (k.segment, k.t)):
+        by_seg.setdefault(k.segment, []).append(k)
     lines = []
-    for seg in facts.segments:
+    for si, seg in enumerate(facts.segments):
         instr = ", ".join(f"{n} ({c:.2f})" for n, c in sorted(seg.instruments.items(), key=lambda x: -x[1]))
         rel = reliability.get(seg.step)
         rel_txt = f"; historical reliability {rel:.2f}" if rel is not None else ""
         lines.append(f"- [{fmt_ts(seg.start_s)}-{fmt_ts(seg.end_s)}] {seg.step} "
                      f"(confidence {seg.conf:.2f}{rel_txt}) | instruments: {instr or 'none detected'}")
-    return "\n".join(lines) if lines else "(the system detected no surgical steps in this interval)"
+        # text follows each image tag on its line: vLLM's Gemma 3 processor merges the newlines it inserts
+        # around an image with an adjacent newline token, and then no longer finds the image placeholder
+        lines += [f"  keyframe {fmt_ts(k.t)}: {IMAGE_TAG} (frame {j} of this segment)"
+                  for j, k in enumerate(by_seg.get(si, []), 1)]
+    if not lines:
+        return "(the system detected no surgical steps in this interval)"
+    lines.append("Instruments detected in this interval, each once (highest detection confidence): "
+                 + (render_instrument_summary(facts) or "none detected"))
+    return "\n".join(lines)
+
+
+def render_instrument_summary(facts) -> str:
+    """Every instrument detected in any segment, once, with its highest detection confidence."""
+    best = {}
+    for seg in facts.segments:
+        for n, c in seg.instruments.items():
+            best[n] = max(best.get(n, 0.0), c)
+    return ", ".join(f"{n} ({c:.2f})" for n, c in sorted(best.items(), key=lambda x: -x[1]))
 
 
 def render_instrument_reliability(instr_names: list, reliability: dict) -> str:
@@ -55,14 +87,17 @@ def render_instrument_reliability(instr_names: list, reliability: dict) -> str:
 
 
 def build_messages(facts, reliability: dict, step_vocab: list, instr_vocab: list,
-                   procedure: str, window: tuple | None = None, max_step_lines: int = 25) -> list:
+                   procedure: str, window: tuple | None = None, max_step_lines: int = 25,
+                   keyframes: list | None = None) -> list:
+    """Chat messages for one prompt. With keyframes, each one is an IMAGE_TAG placed under its
+    segment; the matching image list is keyframes.image_paths(keyframes)."""
     scope = (f"This excerpt covers {fmt_ts(window[0])}-{fmt_ts(window[1])} of the procedure. "
              f"Document only what happens inside it.\n" if window else
              "This is the complete procedure.\n")
     user = f"""Procedure: {procedure}
 {scope}
 Automatic perception output, time-ordered (may contain errors):
-{render_perception(facts, reliability)}
+{render_perception(facts, reliability, keyframes)}{chr(10) + KEYFRAME_USER if keyframes else ""}
 
 Historical reliability of instrument detection: {render_instrument_reliability(instr_vocab, reliability)}
 
@@ -71,25 +106,27 @@ Allowed instrument names: {"; ".join(instr_vocab)}
 
 Write the note in EXACTLY this format, sections in this order, nothing outside the tags:
 
-<facts_used>one or two sentences on which detections you relied on and which you doubted</facts_used>
 <note>
 <procedure>{procedure}</procedure>
 <findings>{PLACEHOLDER}</findings>
 <steps>
-- <allowed step name> [HH:MM:SS-HH:MM:SS] (conf=<0.00-1.00>)
+- Step name [HH:MM:SS-HH:MM:SS] (conf=0.00-1.00)
 </steps>
 <instruments>
-- <allowed instrument name> (conf=<0.00-1.00>)
+- Instrument name (conf=0.00-1.00)
 </instruments>
 <complications>{PLACEHOLDER}</complications>
 <closure>closure/reconstruction steps supported by the evidence, else {PLACEHOLDER}</closure>
 </note>
 
-Rules: one step or instrument per line; use the allowed names verbatim; omit anything you
-believe did not happen; conf is the probability the line is correct. Keep the note concise:
-list each step occurrence once, give one line spanning a step that is only briefly interrupted,
-never repeat a line, use at most {max_step_lines} step lines, and write nothing after </note>."""
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+Rules: one step or instrument per line; replace "Step name" and "Instrument name" with the allowed names verbatim; omit anything you
+believe did not happen; conf is the probability the line is correct. Each line holds only the name,
+the time range for steps, and conf -- do not copy the detection confidence or historical reliability
+into the note. Keep the note concise: list each step occurrence once, give one line spanning a step
+that is only briefly interrupted or split into fragments, list each instrument once (the summary line of detected instruments has each one once), never repeat a
+line, use at most {max_step_lines} step lines, and write nothing after </note>."""
+    system = SYSTEM_PROMPT + (KEYFRAME_SYSTEM if keyframes else "")
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
 def render_template_note(facts, procedure: str) -> str:
@@ -105,7 +142,6 @@ def render_template_note(facts, procedure: str) -> str:
     closure_steps = [s.step for s in facts.segments if any(k in s.step.lower() for k in CLOSURE_KEYWORDS)]
     closure = ("Closure steps recorded: " + ", ".join(dict.fromkeys(closure_steps)) + "."
                if closure_steps else PLACEHOLDER)
-    return (f"<facts_used>All {len(facts.segments)} perceived segments used as-is.</facts_used>\n"
-            f"<note>\n<procedure>{procedure}</procedure>\n<findings>{PLACEHOLDER}</findings>\n"
+    return (f"<note>\n<procedure>{procedure}</procedure>\n<findings>{PLACEHOLDER}</findings>\n"
             f"<steps>\n{steps}\n</steps>\n<instruments>\n{instruments}\n</instruments>\n"
             f"<complications>{PLACEHOLDER}</complications>\n<closure>{closure}</closure>\n</note>")

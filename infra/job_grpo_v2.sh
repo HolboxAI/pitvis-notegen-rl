@@ -8,17 +8,30 @@
 #     so a new instance or a lost disk resumes from the newest checkpoint in S3;
 #   - training restarts with --resume from the highest-step full checkpoint;
 #   - to resume from a specific checkpoint instead, put its path (relative to the project dir,
-#     e.g. runs/pitvis-notegen/grpo_v2/v0-.../checkpoint-150) in $RUNS_S3/$OUT/resume_from.txt;
+#     e.g. runs/pitvis-notegen/grpo_medgemma/v0-.../checkpoint-150) in $RUNS_S3/$OUT/resume_from.txt;
 #   - after a watchdog stop, training is not restarted automatically: delete $OUT/.watchdog_stop
 #     (locally and in S3) and set resume_from.txt to its last_healthy_checkpoint to continue.
 set -euo pipefail
-PROJ_S3=s3://stanford-segment-clips/debjyoti/operative-notes/pitvis-notegen-rl
+PROJ_S3=${PROJ_S3:-s3://stanford-segment-clips/debjyoti/operative-notes/pitvis-notegen-rl-medgemma}
 RUNS_S3=s3://stanford-segment-clips/debjyoti/operative-notes/runs/pitvis-notegen
-OUT=${OUT:-grpo_v2}
-EVAL=${EVAL:-eval_v2}
+OUT=${OUT:-grpo_medgemma_v3}
+EVAL=${EVAL:-eval_medgemma_v3}
+# MedGemma 1.5 4B: the copy in S3 (operative-notes/models/) is used when present, otherwise the model
+# is downloaded from Hugging Face (gated: the token is read from S3, never stored in the repository)
+MODEL_S3=s3://stanford-segment-clips/debjyoti/operative-notes/models/medgemma-1.5-4b-it
+MODEL_DIR=/opt/notegen/models/medgemma-1.5-4b-it
+HF_TOKEN=$(aws s3 cp s3://stanford-segment-clips/debjyoti/operative-notes/control/hf_token.txt - 2>/dev/null || true)
+[[ -n "$HF_TOKEN" ]] && export HF_TOKEN
 cd /opt/notegen
 aws s3 sync "$PROJ_S3/" pitvis-notegen-rl/ --exclude "runs/*" --exclude "control/*" --only-show-errors
 cd pitvis-notegen-rl
+if aws s3 ls "$MODEL_S3/config.json" >/dev/null 2>&1; then
+  aws s3 sync "$MODEL_S3" "$MODEL_DIR" --only-show-errors
+  sed -i "s#^  base: google/medgemma-1.5-4b-it#  base: $MODEL_DIR#" config.yaml   # this instance's copy only
+  echo "MedGemma 1.5 4B from $MODEL_S3 -> $MODEL_DIR"
+else
+  [[ -n "${HF_TOKEN:-}" ]] || { echo "no model at $MODEL_S3 and no Hugging Face token at control/hf_token.txt"; exit 1; }
+fi
 mkdir -p logs
 W=runs/pitvis-notegen
 mkdir -p "$W/$OUT"
@@ -36,9 +49,13 @@ python -m pip install -q "qwen-vl-utils>=0.0.14"
 export VLLM_USE_FLASHINFER_SAMPLER=0
 python -m pytest -q tests
 
-echo "=== [v2 0] datasets (validation split, length-controlled prompts)"
-if [[ ! -f $W/datasets/.v2 ]]; then
-  python scripts/04_build_datasets.py && touch $W/datasets/.v2
+DS=$(python -c "from notegen_rl.config import load_config, datasets_subdir; print(datasets_subdir(load_config()))")
+echo "=== [v2 0] datasets -> $W/$DS (validation split, length-controlled prompts)"
+aws s3 sync "$RUNS_S3/$DS" "$W/$DS" --only-show-errors || true
+if [[ ! -f $W/$DS/grpo_train.jsonl ]]; then
+  for f in taxonomy.json split.json; do [[ -f $W/$f ]] || aws s3 cp "$RUNS_S3/$f" "$W/$f" --only-show-errors; done
+  for d in predictions facts; do aws s3 sync "$RUNS_S3/$d" "$W/$d" --only-show-errors || true; done
+  python scripts/04_build_datasets.py
 fi
 
 if [[ -f $W/$OUT/.done ]]; then

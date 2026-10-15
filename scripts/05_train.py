@@ -8,6 +8,7 @@ GRPO starts from (first match): the SFT adapter if sft.enabled, else llm.cold_st
 else the plain base model.
 """
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -18,12 +19,19 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from notegen_rl.config import PROJECT_DIR, load_config, resolve, upload_results, wpath  # noqa: E402
+from notegen_rl.config import PROJECT_DIR, dataset_path, load_config, resolve, upload_results, wpath  # noqa: E402
 from notegen_rl.llm import find_latest_checkpoint  # noqa: E402
 
 
 def tuner_flag(sub: str) -> str:
-    """ms-swift renamed --train_type to --tuner_type in newer releases; ask the installed one."""
+    """ms-swift renamed --train_type to --tuner_type in newer releases (4.x, every command); ask the
+    installed one: its version, then its help text."""
+    try:
+        from importlib.metadata import version
+        if int(version("ms-swift").split(".")[0]) >= 4:
+            return "--tuner_type"
+    except Exception:  # noqa: BLE001 -- not installed as a distribution: fall back to the help text
+        pass
     try:
         out = subprocess.run(["swift", sub, "--help"], capture_output=True, text=True, timeout=900)
         return "--tuner_type" if "--tuner_type" in (out.stdout + out.stderr) else "--train_type"
@@ -36,6 +44,10 @@ def common(cfg, sub, rank, alpha):
     cmd = ["swift", sub, "--model", llm["base"]]
     if llm.get("model_type"):
         cmd += ["--model_type", llm["model_type"]]
+    if llm.get("attn_impl"):
+        cmd += ["--attn_impl", llm["attn_impl"]]
+    if llm.get("response_prefix"):
+        cmd += ["--response_prefix", llm["response_prefix"]]
     cmd += [tuner_flag(sub), "lora", "--lora_rank", str(rank), "--lora_alpha", str(alpha),
             "--target_modules", "all-linear", "--torch_dtype", "bfloat16",
             "--gradient_checkpointing", "true", "--split_dataset_ratio", "0"]
@@ -93,6 +105,8 @@ def grpo_cmd(cfg, dataset, out_dir, start_adapter=None):
     ]
     if g.get("loss_type"):
         cmd += ["--loss_type", g["loss_type"]]
+    if float(g.get("repetition_penalty") or 1.0) != 1.0:  # applied to the sampled candidate notes
+        cmd += ["--repetition_penalty", str(g["repetition_penalty"])]
     if g.get("save_total_limit"):  # null keeps every checkpoint
         cmd += ["--save_total_limit", str(g["save_total_limit"])]
     if g["use_vllm"]:
@@ -100,6 +114,9 @@ def grpo_cmd(cfg, dataset, out_dir, start_adapter=None):
                 "--vllm_gpu_memory_utilization", str(g["vllm_gpu_memory_utilization"]),
                 "--vllm_max_model_len", str(g["max_length"] + g["max_completion_length"]),
                 "--sleep_level", "1"]
+        kcfg = cfg.get("keyframes") or {}
+        if kcfg.get("enabled"):  # keyframe prompts: room for every image of a prompt in vLLM
+            cmd += ["--vllm_limit_mm_per_prompt", json.dumps({"image": int(kcfg["max_images_per_prompt"])})]
     return cmd + [str(a) for a in g.get("extra_args") or []]
 
 
@@ -108,7 +125,8 @@ def main():
     ap.add_argument("--config")
     ap.add_argument("--stage", choices=["sft", "grpo"], required=True)
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--dataset", help="file under work_dir/datasets (default: sft_train / grpo_train .jsonl)")
+    ap.add_argument("--dataset", help="file under the datasets dir (work_dir/datasets, or datasets_keyframes "
+                                      "with keyframes.enabled; default: sft_train / grpo_train .jsonl)")
     ap.add_argument("--output-subdir", help="work_dir subdir for checkpoints (default: the stage name)")
     ap.add_argument("--start-adapter", help="GRPO only: LoRA checkpoint to start from (overrides config)")
     ap.add_argument("--resume", action="store_true",
@@ -133,7 +151,7 @@ def main():
 
     sub = args.output_subdir or args.stage
     dataset = args.dataset or f"{args.stage}_train.jsonl"
-    dataset = dataset if Path(dataset).is_absolute() else str(wpath(cfg, "datasets", dataset))
+    dataset = dataset if Path(dataset).is_absolute() else str(dataset_path(cfg, dataset))
     out_dir = str(wpath(cfg, sub))
     resume_from = args.resume_from or (find_latest_checkpoint(out_dir, resumable=True) if args.resume else None)
     if resume_from and not (Path(resume_from) / "optimizer.pt").exists():
